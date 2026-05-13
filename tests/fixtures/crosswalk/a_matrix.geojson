@@ -1,0 +1,53 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "id": 1, "name": "NW (unchanged)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0,0],[2,0],[2,2],[0,2],[0,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 2, "name": "Shifted (modified)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[2,0],[4,0],[4,2],[2,2],[2,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 3, "name": "Mid lower (merge)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[4,0],[6,0],[6,2],[4,2],[4,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 4, "name": "Mid upper (merge)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[4,2],[6,2],[6,4],[4,4],[4,2]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 5, "name": "Big (split)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[6,0],[10,0],[10,2],[6,2],[6,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 6, "name": "Old (removed)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0,2],[2,2],[2,4],[0,4],[0,2]]]
+      }
+    }
+  ]
+}

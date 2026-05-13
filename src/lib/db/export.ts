@@ -3,9 +3,16 @@ import { DuckDBDataProtocol } from "@duckdb/duckdb-wasm";
 import { zip as fflateZip } from "fflate";
 import { duckdbState } from "./duckdb.svelte";
 
-export type ExportSource = "extend" | "clip" | "clean";
+export type ExportSource =
+  | "extend"
+  | "clip"
+  | "clean"
+  | "crosswalk_overlay"
+  | "crosswalk_pairs";
 
-export type ExportKind = "geojson_cached" | "gdal" | "parquet";
+export type ExportKind = "geojson_cached" | "gdal" | "parquet" | "csv";
+
+export type SourceKind = "spatial" | "tabular";
 
 export interface ExportFormat {
   id: string;
@@ -102,11 +109,34 @@ const KNOWN_DRIVERS: Record<string, DriverMeta> = {
   },
 };
 
-const SOURCES: Record<ExportSource, { table: string; suffix: string }> = {
-  extend: { table: "layer_05", suffix: "_ee" },
-  clip: { table: "layer_clip", suffix: "_em" },
-  clean: { table: "layer_01", suffix: "_cleaned" },
+interface SourceConfig {
+  table: string;
+  attrTable: string | null;
+  suffix: string;
+  kind: SourceKind;
+}
+
+const SOURCES: Record<ExportSource, SourceConfig> = {
+  extend: { table: "layer_05", attrTable: "layer_attr", suffix: "_ee", kind: "spatial" },
+  clip: { table: "layer_clip", attrTable: "layer_attr", suffix: "_em", kind: "spatial" },
+  clean: { table: "layer_01", attrTable: "layer_attr", suffix: "_cleaned", kind: "spatial" },
+  crosswalk_overlay: {
+    table: "cw_overlay_render",
+    attrTable: null,
+    suffix: "_cw_overlay",
+    kind: "spatial",
+  },
+  crosswalk_pairs: {
+    table: "cw_pairs_classified",
+    attrTable: null,
+    suffix: "_cw_pairs",
+    kind: "tabular",
+  },
 };
+
+export function sourceKind(source: ExportSource): SourceKind {
+  return SOURCES[source].kind;
+}
 
 // GDAL-driven GeoJSON. Used as the primary-button format when DownloadMenu
 // has no cached GeoJSON string available (i.e. the cleaned-input fallback
@@ -122,18 +152,44 @@ export const gdalGeoJSONFormat: ExportFormat = {
   rank: 5,
 };
 
-let cachedFormats: Promise<ExportFormat[]> | null = null;
+let cachedSpatialFormats: Promise<ExportFormat[]> | null = null;
 
 export function resetFormatsCache(): void {
-  cachedFormats = null;
+  cachedSpatialFormats = null;
 }
 
-export async function listFormats(): Promise<ExportFormat[]> {
-  if (!cachedFormats) cachedFormats = discoverFormats();
-  return cachedFormats;
+export async function listFormats(source?: ExportSource): Promise<ExportFormat[]> {
+  const kind: SourceKind = source ? SOURCES[source].kind : "spatial";
+  if (kind === "tabular") return tabularFormats();
+  if (!cachedSpatialFormats) cachedSpatialFormats = discoverSpatialFormats();
+  return cachedSpatialFormats;
 }
 
-async function discoverFormats(): Promise<ExportFormat[]> {
+function tabularFormats(): ExportFormat[] {
+  // Plain tabular sources (e.g. crosswalk_pairs): no geometry, no GDAL drivers.
+  // CSV is the primary readable export; Parquet rides the same native COPY path
+  // (FORMAT PARQUET) as the spatial Parquet export.
+  return [
+    {
+      id: "csv",
+      label: "CSV (.csv)",
+      ext: ".csv",
+      mime: "text/csv",
+      kind: "csv",
+      rank: 1,
+    },
+    {
+      id: "parquet",
+      label: "Parquet (.parquet)",
+      ext: ".parquet",
+      mime: "application/vnd.apache.parquet",
+      kind: "parquet",
+      rank: 10,
+    },
+  ];
+}
+
+async function discoverSpatialFormats(): Promise<ExportFormat[]> {
   const conn = duckdbState.conn;
   if (!conn) throw new Error("DuckDB is not ready yet.");
 
@@ -207,6 +263,8 @@ export async function runExport(
       return exportGdal(source, format, filenameStem);
     case "parquet":
       return exportParquet(source, format, filenameStem);
+    case "csv":
+      return exportCsv(source, format, filenameStem);
   }
 }
 
@@ -265,12 +323,22 @@ function toBlob(bytes: Uint8Array, type: string): Blob {
   return new Blob([ab], { type });
 }
 
-async function buildJoinSelect(
+async function buildSpatialSelect(
   conn: AsyncDuckDBConnection,
-  table: string,
+  source: SourceConfig,
   geomExpr: string,
 ): Promise<string> {
-  const attrDesc = await conn.query("DESCRIBE layer_attr");
+  if (!source.attrTable) {
+    // Source carries its own props on the row; passthrough every non-geom column.
+    const desc = await conn.query(`DESCRIBE ${source.table}`);
+    const schema = desc.toArray() as Array<{ column_name: string; column_type: string }>;
+    const cols = schema
+      .filter((r) => r.column_name !== "geom")
+      .map((r) => `a.${JSON.stringify(r.column_name)}`);
+    const extra = cols.length > 0 ? ", " + cols.join(", ") : "";
+    return `SELECT ${geomExpr}${extra} FROM ${source.table} AS a WHERE a.geom IS NOT NULL`;
+  }
+  const attrDesc = await conn.query(`DESCRIBE ${source.attrTable}`);
   const attrSchema = attrDesc.toArray() as Array<{
     column_name: string;
     column_type: string;
@@ -289,7 +357,11 @@ async function buildJoinSelect(
       return isIncompatible(r.column_type) ? `CAST(b.${col} AS VARCHAR) AS ${col}` : `b.${col}`;
     });
   const cols = attrExprs.length > 0 ? ", " + attrExprs.join(", ") : "";
-  return `SELECT ${geomExpr}${cols} FROM ${table} AS a LEFT JOIN layer_attr AS b ON a.fid = b.fid WHERE a.geom IS NOT NULL`;
+  return `SELECT ${geomExpr}${cols} FROM ${source.table} AS a LEFT JOIN ${source.attrTable} AS b ON a.fid = b.fid WHERE a.geom IS NOT NULL`;
+}
+
+async function buildTabularSelect(source: SourceConfig): Promise<string> {
+  return `SELECT * FROM ${source.table}`;
 }
 
 async function exportGdal(
@@ -298,9 +370,10 @@ async function exportGdal(
   stem: string,
 ): Promise<ExportResult> {
   const { db, conn } = requireDb();
-  const { table, suffix } = SOURCES[source];
+  const cfg = SOURCES[source];
+  const { suffix } = cfg;
   const meta = format.driver ? KNOWN_DRIVERS[format.driver] : undefined;
-  const select = await buildJoinSelect(conn, table, "ST_Multi(a.geom) AS geom");
+  const select = await buildSpatialSelect(conn, cfg, "ST_Multi(a.geom) AS geom");
 
   const layerOptionsClause =
     meta?.layerOptions && meta.layerOptions.length > 0
@@ -393,8 +466,11 @@ async function exportParquet(
   stem: string,
 ): Promise<ExportResult> {
   const { db, conn } = requireDb();
-  const { table, suffix } = SOURCES[source];
-  const select = await buildJoinSelect(conn, table, "a.geom AS geometry");
+  const cfg = SOURCES[source];
+  const select =
+    cfg.kind === "tabular"
+      ? await buildTabularSelect(cfg)
+      : await buildSpatialSelect(conn, cfg, "a.geom AS geometry");
 
   const path = vfsName(format.ext);
   try {
@@ -402,7 +478,31 @@ async function exportParquet(
     const bytes = await db.copyFileToBuffer(path);
     return {
       blob: toBlob(bytes, format.mime),
-      filename: `${stem}${suffix}${format.ext}`,
+      filename: `${stem}${cfg.suffix}${format.ext}`,
+    };
+  } finally {
+    await dropFileSafe(db, path);
+  }
+}
+
+async function exportCsv(
+  source: ExportSource,
+  format: ExportFormat,
+  stem: string,
+): Promise<ExportResult> {
+  const { db, conn } = requireDb();
+  const cfg = SOURCES[source];
+  if (cfg.kind !== "tabular") {
+    throw new Error(`CSV export is only supported for tabular sources (got ${source}).`);
+  }
+  const select = await buildTabularSelect(cfg);
+  const path = vfsName(format.ext);
+  try {
+    await conn.query(`COPY (${select}) TO ${quotePath(path)} (FORMAT CSV, HEADER)`);
+    const bytes = await db.copyFileToBuffer(path);
+    return {
+      blob: toBlob(bytes, format.mime),
+      filename: `${stem}${cfg.suffix}${format.ext}`,
     };
   } finally {
     await dropFileSafe(db, path);

@@ -1,0 +1,11 @@
+---
+import Layout from "../layouts/Layout.astro";
+import App from "$lib/tools/crosswalk/App.svelte";
+---
+
+<Layout
+  title="Boundary Cross-walk — compare two polygon layers in your browser"
+  description="Browser-only tool that compares two versions of an administrative-boundary polygon layer and classifies each unit as unchanged, modified, merged, split, created, or removed."
+>
+  <App client:load />
+</Layout>
