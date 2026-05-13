@@ -18,6 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 const FORCE = process.argv.includes("--force");
 
+/** @param {string} p */
 async function exists(p) {
   try {
     await access(p);

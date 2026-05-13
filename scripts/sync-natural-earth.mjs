@@ -20,6 +20,7 @@ const FILES = [
   },
 ];
 
+/** @param {string} p */
 async function exists(p) {
   try {
     await access(p);
