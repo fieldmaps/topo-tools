@@ -1,0 +1,137 @@
+import type { AsyncDuckDB, AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
+import { buildKeyed, dropPriorRun, loadSide } from "./load";
+import { stageOverlay } from "./overlay";
+import { stageAreas } from "./areas";
+import { stageClassify, type RelClass } from "./classify";
+import { stageRender, buildOverlayGeoJSON, buildOutlineGeoJSON, computeBounds } from "./render";
+import { stageTable, type TableRow } from "./table";
+
+export type ProgressFn = (stage: number, label: string) => void;
+
+export class PipelineError extends Error {
+  constructor(
+    message: string,
+    public readonly failedStage: number,
+  ) {
+    super(message);
+    this.name = "PipelineError";
+  }
+}
+
+export interface PipelineOptions {
+  tauMatch: number;
+  tauSame: number;
+  sliverEps?: number;
+  aCodeCol: string | null;
+  aNameCol: string | null;
+  bCodeCol: string | null;
+  bNameCol: string | null;
+}
+
+export interface PipelineResult {
+  overlayGeoJSON: string;
+  outlineAGeoJSON: string;
+  outlineBGeoJSON: string;
+  tableRows: TableRow[];
+  bounds: [number, number, number, number] | null;
+}
+
+const STAGE_LABELS = [
+  "Loading sources",
+  "Building keyed layers",
+  "Overlaying boundaries",
+  "Computing coverage",
+  "Classifying clusters",
+  "Rendering overlay",
+];
+
+export function stageLabel(i: number): string {
+  return STAGE_LABELS[i - 1] ?? "";
+}
+
+export async function runFromLoaded(
+  conn: AsyncDuckDBConnection,
+  opts: PipelineOptions,
+  onProgress: ProgressFn,
+): Promise<PipelineResult> {
+  let stage = 0;
+  try {
+    stage = 2;
+    onProgress(2, "Building keyed layers");
+    await buildKeyed(conn, "a", opts.aCodeCol, opts.aNameCol);
+    await buildKeyed(conn, "b", opts.bCodeCol, opts.bNameCol);
+
+    stage = 3;
+    onProgress(3, "Overlaying boundaries");
+    await stageOverlay(conn, opts.sliverEps);
+
+    stage = 4;
+    onProgress(4, "Computing coverage");
+    await stageAreas(conn);
+
+    stage = 5;
+    onProgress(5, "Classifying clusters");
+    await stageClassify(conn, { tauMatch: opts.tauMatch, tauSame: opts.tauSame });
+
+    stage = 6;
+    onProgress(6, "Rendering overlay");
+    await stageRender(conn);
+    const [overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds] = await Promise.all(
+      [
+        buildOverlayGeoJSON(conn),
+        buildOutlineGeoJSON(conn, "a"),
+        buildOutlineGeoJSON(conn, "b"),
+        stageTable(conn),
+        computeBounds(conn),
+      ],
+    );
+
+    return { overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new PipelineError(msg, stage);
+  }
+}
+
+// Re-runs only the classify → render path. Used when the user moves the
+// threshold sliders: geometry hasn't changed, only how clusters are labeled.
+export async function reclassifyOnly(
+  conn: AsyncDuckDBConnection,
+  opts: PipelineOptions,
+): Promise<PipelineResult> {
+  await stageClassify(conn, { tauMatch: opts.tauMatch, tauSame: opts.tauSame });
+  await stageRender(conn);
+  const [overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds] = await Promise.all([
+    buildOverlayGeoJSON(conn),
+    buildOutlineGeoJSON(conn, "a"),
+    buildOutlineGeoJSON(conn, "b"),
+    stageTable(conn),
+    computeBounds(conn),
+  ]);
+  return { overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds };
+}
+
+// Full load + run, used on the initial "Run" button click after both files are
+// dropped. Splits stage 1 (load) into A and B sub-steps for nicer progress UX.
+export async function runPipeline(
+  db: AsyncDuckDB,
+  conn: AsyncDuckDBConnection,
+  filesA: File[],
+  filesB: File[],
+  opts: PipelineOptions,
+  onProgress: ProgressFn,
+): Promise<PipelineResult> {
+  try {
+    await dropPriorRun(conn);
+    onProgress(1, "Loading Previous");
+    await loadSide(db, conn, "a", filesA);
+    onProgress(1, "Loading New");
+    await loadSide(db, conn, "b", filesB);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new PipelineError(msg, 1);
+  }
+  return runFromLoaded(conn, opts, onProgress);
+}
+
+export type { TableRow, RelClass };

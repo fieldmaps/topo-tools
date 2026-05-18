@@ -28,4 +28,3 @@ npm-debug.log*
 
 # Assets synced at build time by scripts/sync-*.mjs — see package.json prebuild
 public/duckdb/
-public/data/

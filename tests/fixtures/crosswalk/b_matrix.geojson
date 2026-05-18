@@ -1,0 +1,53 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "id": 1, "name": "NW (unchanged)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0,0],[2,0],[2,2],[0,2],[0,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 2, "name": "Shifted east (modified)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[2.3,0],[4.3,0],[4.3,2],[2.3,2],[2.3,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 7, "name": "Mid merged" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[4,0],[6,0],[6,4],[4,4],[4,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 81, "name": "Big West (split)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[6,0],[8,0],[8,2],[6,2],[6,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 82, "name": "Big East (split)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[8,0],[10,0],[10,2],[8,2],[8,0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 9, "name": "Brand new (created)" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0,4],[2,4],[2,6],[0,6],[0,4]]]
+      }
+    }
+  ]
+}

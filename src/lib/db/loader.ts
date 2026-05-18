@@ -123,14 +123,20 @@ export async function loadFile(
   db: AsyncDuckDB,
   conn: AsyncDuckDBConnection,
   files: File[],
+  options: { prefix?: string } = {},
 ): Promise<void> {
+  const prefix = options.prefix ?? "";
+  const rawName = `${prefix}raw_layer`;
+  const attrName = `${prefix}layer_attr`;
+  const geomName = `${prefix}layer_01`;
+
   const expanded = await expandZips(files);
   const group = groupByType(expanded);
 
   // Drop any tables from a previous run
-  await conn.query("DROP TABLE IF EXISTS raw_layer");
-  await conn.query("DROP TABLE IF EXISTS layer_01");
-  await conn.query("DROP TABLE IF EXISTS layer_attr");
+  await conn.query(`DROP TABLE IF EXISTS ${rawName}`);
+  await conn.query(`DROP TABLE IF EXISTS ${geomName}`);
+  await conn.query(`DROP TABLE IF EXISTS ${attrName}`);
 
   let filePath: string;
   let isParquet = false;
@@ -174,12 +180,12 @@ export async function loadFile(
   // Load into raw_layer with stable fid
   const readFn = isParquet ? `read_parquet(${sqlPath})` : `ST_Read(${sqlPath})`;
   await conn.query(`
-    CREATE OR REPLACE TABLE raw_layer AS
+    CREATE OR REPLACE TABLE ${rawName} AS
     SELECT *, row_number() OVER () AS fid FROM ${readFn}
   `);
 
   // Detect geometry column and _bbox columns to exclude
-  const desc = await conn.query("DESCRIBE raw_layer");
+  const desc = await conn.query(`DESCRIBE ${rawName}`);
   const schema = desc.toArray() as Array<{
     column_name: string;
     column_type: string;
@@ -210,19 +216,19 @@ export async function loadFile(
 
   // Attribute table: all non-geometry, non-bbox columns (keeps fid)
   await conn.query(`
-    CREATE OR REPLACE TABLE layer_attr AS
+    CREATE OR REPLACE TABLE ${attrName} AS
     SELECT * EXCLUDE (${excludeSQL})
-    FROM raw_layer
+    FROM ${rawName}
   `);
 
   const quotedGeomCol = JSON.stringify(geomCol);
   await conn.query(`
-    CREATE OR REPLACE TABLE layer_01 AS
+    CREATE OR REPLACE TABLE ${geomName} AS
     SELECT fid, ${loadGeomExpr(geomType, quotedGeomCol)} AS geom
-    FROM raw_layer
+    FROM ${rawName}
   `);
 
-  await conn.query("DROP TABLE raw_layer");
+  await conn.query(`DROP TABLE ${rawName}`);
 
   // Release the input file buffers — they're not read again past this point,
   // and on a multi-hundred-MB input they'd otherwise stay pinned in WASM heap

@@ -3,6 +3,7 @@
     gdalGeoJSONFormat,
     listFormats,
     runExport,
+    sourceKind,
     type ExportFormat,
     type ExportResult,
     type ExportSource,
@@ -47,6 +48,17 @@
     rank: 0,
   };
 
+  const csvFormat: ExportFormat = {
+    id: "csv",
+    label: "CSV (.csv)",
+    ext: ".csv",
+    mime: "text/csv",
+    kind: "csv",
+    rank: 1,
+  };
+
+  const isTabular = $derived(sourceKind(exportSource) === "tabular");
+
   $effect(() => {
     if (!open) return;
     const onDocMouseDown = (e: MouseEvent) => {
@@ -63,7 +75,7 @@
     loadingFormats = true;
     formatsError = null;
     try {
-      formats = await listFormats();
+      formats = await listFormats(exportSource);
     } catch (e) {
       formatsError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -84,10 +96,18 @@
     error = null;
     busy = true;
     try {
-      // No cached string → route GeoJSON through GDAL so output streams via
-      // OPFS instead of materializing a giant JS string. Necessary when the
-      // pipeline already OOM'd; building the string here would re-trigger it.
-      const fmt = cachedGeoJSON ? cachedGeoJSONFormat : gdalGeoJSONFormat;
+      // Format picked from source kind + cached availability:
+      //  - tabular source → CSV (always native COPY, no spatial drivers)
+      //  - spatial + cached string → use cached GeoJSON for instant download
+      //  - spatial + no cache → GDAL GeoJSON via OPFS (avoids re-OOM on big results)
+      let fmt: ExportFormat;
+      if (isTabular) {
+        fmt = csvFormat;
+      } else if (cachedGeoJSON) {
+        fmt = cachedGeoJSONFormat;
+      } else {
+        fmt = gdalGeoJSONFormat;
+      }
       const r = await runExport(exportSource, fmt, filenameStem, cachedGeoJSON);
       triggerDownload(r);
     } catch (e) {
