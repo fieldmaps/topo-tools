@@ -92,24 +92,50 @@
 
   // Auto-load each side when files are dropped. Don't kick off the full
   // pipeline yet — wait for the user to confirm columns and press Run.
+  // Re-dropping after a run reloads: stale dropdowns/results would otherwise
+  // linger because loadedA/loadedB stayed true from the prior run.
   $effect(() => {
     const f = filesA;
     const ready = duckdbState.ready;
-    if (f.length > 0 && ready) {
-      untrack(() => {
-        if (!loadedA && loadingSide !== "a") loadSideThen("a");
-      });
-    }
+    if (f.length === 0 || !ready) return;
+    untrack(() => {
+      if (loadingSide === "a") return;
+      colsA = null;
+      aCodeCol = null;
+      aNameCol = null;
+      loadedA = false;
+      resetResults();
+      loadSideThen("a");
+    });
   });
   $effect(() => {
     const f = filesB;
     const ready = duckdbState.ready;
-    if (f.length > 0 && ready) {
-      untrack(() => {
-        if (!loadedB && loadingSide !== "b") loadSideThen("b");
-      });
-    }
+    if (f.length === 0 || !ready) return;
+    untrack(() => {
+      if (loadingSide === "b") return;
+      colsB = null;
+      bCodeCol = null;
+      bNameCol = null;
+      loadedB = false;
+      resetResults();
+      loadSideThen("b");
+    });
   });
+
+  function resetResults(): void {
+    overlayGeoJSON = null;
+    outlineAGeoJSON = null;
+    outlineBGeoJSON = null;
+    tableRows = [];
+    bounds = null;
+    selectedClusterId = null;
+    currentStage = 0;
+    errorStage = 0;
+    stageLabel = "";
+    error = null;
+    loadError = null;
+  }
 
   async function loadSideThen(side: "a" | "b"): Promise<void> {
     loadError = null;
