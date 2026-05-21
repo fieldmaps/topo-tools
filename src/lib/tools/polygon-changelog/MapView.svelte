@@ -313,7 +313,7 @@
       container,
       style,
       center: [20, 5],
-      zoom: 1.5,
+      zoom: Math.log2((Math.min(container.clientWidth, container.clientHeight) * Math.PI) / 512),
       attributionControl: { compact: true },
     });
     map.once("load", () => {
