@@ -29,9 +29,11 @@ async function exists(p) {
 }
 
 // Bump this together with @duckdb/duckdb-wasm in package.json.
-// Find the engine version from upstream release notes or by querying
-//   SELECT version() at runtime.
-const ENGINE_VERSION = "v1.5.2";
+// For stable releases: "v1.5.2" style. For dev/nightly builds the engine
+// reports a short commit hash instead — check the browser console error
+//   "Extension /duckdb/extensions/<hash>/wasm_eh/spatial… is not available"
+// to find the hash, or run: SELECT version() in DuckDB at runtime.
+const ENGINE_VERSION = "3a0db63233";
 const EXTENSIONS = ["spatial"];
 // wasm_threads (coi) is omitted because DUCKDB_BUNDLES in
 // src/lib/db/duckdb.svelte.ts deliberately excludes the coi variant —
