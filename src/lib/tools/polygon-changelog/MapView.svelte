@@ -18,7 +18,7 @@
     bounds = null,
     selectedClusterId = null,
     visibleClasses = null,
-    showSide = "both" as "both" | "a" | "b",
+    showSide = "b" as "a" | "b",
     onClusterClick,
   }: {
     overlayGeojson?: string | null;
@@ -27,7 +27,7 @@
     bounds?: [number, number, number, number] | null;
     selectedClusterId?: number | null;
     visibleClasses?: Set<string> | null;
-    showSide?: "both" | "a" | "b";
+    showSide?: "a" | "b";
     onClusterClick?: (id: number | null) => void;
   } = $props();
 
@@ -37,6 +37,7 @@
   let outlineAUrl: string | undefined;
   let outlineBUrl: string | undefined;
   let styleReady = false;
+  let sidePending: number | undefined;
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
 
   // Color palette per relationship_class. The palette intentionally keeps
@@ -93,11 +94,6 @@
     if (visibleClasses != null) {
       conditions.push(["match", ["get", "relationship_class"], Array.from(visibleClasses), true, false] as FilterSpecification);
     }
-    if (showSide === "a") {
-      conditions.push(["!=", ["get", "piece_side"], "b_only"] as FilterSpecification);
-    } else if (showSide === "b") {
-      conditions.push(["!=", ["get", "piece_side"], "a_only"] as FilterSpecification);
-    }
     return conditions.length === 1 ? conditions[0] : (["all", ...conditions] as FilterSpecification);
   }
 
@@ -105,9 +101,9 @@
     // Read reactive deps before any early return so Svelte tracks them.
     const filter = buildFillFilter();
     if (!map || !styleReady) return;
-    const layer = "cw-overlay-fill";
-    if (!map.getLayer(layer)) return;
-    map.setFilter(layer, filter);
+    for (const layer of ["cw-overlay-fill", "cw-outline-a-fill", "cw-outline-b-fill"]) {
+      if (map.getLayer(layer)) map.setFilter(layer, filter);
+    }
   });
 
   $effect(() => {
@@ -118,33 +114,38 @@
         ? (["==", ["get", "cluster_id"], -1] as FilterSpecification)
         : (["==", ["get", "cluster_id"], selectedClusterId] as FilterSpecification);
     if (!map || !styleReady) return;
-    if (map.getLayer("cw-overlay-fill")) {
-      map.setPaintProperty("cw-overlay-fill", "fill-opacity", opExpr);
+    for (const layer of ["cw-overlay-fill", "cw-outline-a-fill", "cw-outline-b-fill"]) {
+      if (map.getLayer(layer)) map.setPaintProperty(layer, "fill-opacity", opExpr);
     }
-    if (map.getLayer("cw-highlight-line")) {
-      map.setFilter("cw-highlight-line", highlightFilter);
+    for (const layer of ["cw-highlight-line", "cw-outline-a-highlight", "cw-outline-b-highlight"]) {
+      if (map.getLayer(layer)) map.setFilter(layer, highlightFilter);
     }
   });
 
+  function applySideVisibility(side: "a" | "b"): void {
+    if (!map) return;
+    const vis = (id: string, v: boolean) => {
+      if (map!.getLayer(id)) map!.setLayoutProperty(id, "visibility", v ? "visible" : "none");
+    };
+    const isA = side === "a";
+    vis("cw-overlay-fill", false);
+    vis("cw-outline-a-fill", isA);
+    vis("cw-outline-b-fill", !isA);
+    vis("cw-outline-a-line", isA);
+    vis("cw-outline-b-line", !isA);
+    vis("cw-highlight-line", false);
+    vis("cw-outline-a-highlight", isA);
+    vis("cw-outline-b-highlight", !isA);
+  }
+
   $effect(() => {
-    // Outline visibility driven by showSide.
-    // Read reactive deps before any early return.
+    // Visibility driven by showSide: toggles overlay fill vs side fills + outlines.
+    // Read reactive dep before any early return.
     const side = showSide;
     if (!map || !styleReady) return;
-    const aLayer = "cw-outline-a-line";
-    const bLayer = "cw-outline-b-line";
-    if (!map.getLayer(aLayer) || !map.getLayer(bLayer)) return;
-
-    if (side === "a") {
-      map.setLayoutProperty(aLayer, "visibility", "visible");
-      map.setLayoutProperty(bLayer, "visibility", "none");
-    } else if (side === "b") {
-      map.setLayoutProperty(aLayer, "visibility", "none");
-      map.setLayoutProperty(bLayer, "visibility", "visible");
-    } else {
-      map.setLayoutProperty(aLayer, "visibility", "visible");
-      map.setLayoutProperty(bLayer, "visibility", "visible");
-    }
+    // Cancel any pending frame so rapid changes don't produce intermediate renders.
+    if (sidePending !== undefined) cancelAnimationFrame(sidePending);
+    sidePending = requestAnimationFrame(() => applySideVisibility(side));
   });
 
   $effect(() => {
@@ -187,7 +188,14 @@
         paint: {
           "fill-color": fillColorExpr(),
           "fill-opacity": fillOpacityExpr(),
-          "fill-outline-color": "#444",
+          "fill-outline-color": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            5, "rgba(0,0,0,0)",
+            8, "rgba(0,0,0,0.25)",
+            12, "rgba(0,0,0,0.6)",
+          ] as unknown as string,
         },
       });
       // Highlight outline for the selected cluster — sits above outlines so
@@ -216,7 +224,29 @@
     }
     map.addSource(id, { type: "geojson", data: dataUrl });
     const beforeId = map.getLayer("cw-highlight-line") ? "cw-highlight-line" : undefined;
-    const outlineWidth = ["interpolate", ["linear"], ["zoom"], 4, 1.5, 10, 2.5, 14, 4] as unknown as number;
+    const outlineWidth = ["interpolate", ["linear"], ["zoom"], 4, 0.5, 8, 1, 12, 2, 16, 4] as unknown as number;
+    // Fill layer for single-side comparison mode — hidden by default, shown when showSide matches.
+    map.addLayer(
+      {
+        id: `cw-outline-${side}-fill`,
+        type: "fill",
+        source: id,
+        layout: { visibility: "none" },
+        paint: {
+          "fill-color": fillColorExpr(),
+          "fill-opacity": fillOpacityExpr(),
+          "fill-outline-color": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            5, "rgba(0,0,0,0)",
+            8, "rgba(0,0,0,0.25)",
+            12, "rgba(0,0,0,0.6)",
+          ] as unknown as string,
+        },
+      },
+      beforeId,
+    );
     map.addLayer(
       {
         id: `cw-outline-${side}-line`,
@@ -229,6 +259,23 @@
       },
       beforeId,
     );
+    // Highlight outline for selected cluster on this side's source.
+    map.addLayer({
+      id: `cw-outline-${side}-highlight`,
+      type: "line",
+      source: id,
+      filter: ["==", ["get", "cluster_id"], -1] as FilterSpecification,
+      layout: { visibility: "none" },
+      paint: { "line-color": "#111", "line-width": 2.5 },
+    });
+    map.on("mousemove", `cw-outline-${side}-fill`, () => {
+      if (map) map.getCanvas().style.cursor = "pointer";
+    });
+    map.on("mouseleave", `cw-outline-${side}-fill`, () => {
+      if (map) map.getCanvas().style.cursor = "";
+    });
+    // Apply current showSide visibility since the effect won't re-fire for newly added layers.
+    applySideVisibility(showSide);
   }
 
   $effect(() => {
@@ -249,7 +296,12 @@
 
   function handleMapClick(e: MapMouseEvent): void {
     if (!map || !onClusterClick) return;
-    const feats = map.queryRenderedFeatures(e.point, { layers: ["cw-overlay-fill"] });
+    const fillLayer =
+      showSide === "a" ? "cw-outline-a-fill"
+      : showSide === "b" ? "cw-outline-b-fill"
+      : "cw-overlay-fill";
+    if (!map.getLayer(fillLayer)) { onClusterClick(null); return; }
+    const feats = map.queryRenderedFeatures(e.point, { layers: [fillLayer] });
     if (feats.length === 0) {
       onClusterClick(null);
       return;

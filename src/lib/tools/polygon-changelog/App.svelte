@@ -74,20 +74,14 @@
   let visibleClasses = $state<Set<RelClass>>(new Set(ALL_CLASSES));
 
   // Comparison mode
-  let showSide = $state<"both" | "a" | "b">("both");
-
-  const SIDES: Array<"both" | "a" | "b"> = ["both", "a", "b"];
+  let showSide = $state<"a" | "b">("b");
 
   function handleKey(e: KeyboardEvent): void {
     if (!overlayGeoJSON) return;
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-    if (e.key === "]") {
-      const i = SIDES.indexOf(showSide);
-      showSide = SIDES[(i + 1) % SIDES.length];
-    } else if (e.key === "[") {
-      const i = SIDES.indexOf(showSide);
-      showSide = SIDES[(i + SIDES.length - 1) % SIDES.length];
+    if (e.key === "]" || e.key === "[") {
+      showSide = showSide === "a" ? "b" : "a";
     }
   }
 
@@ -157,7 +151,7 @@
     stageLabel = "";
     error = null;
     loadError = null;
-    showSide = "both";
+    showSide = "b";
   }
 
   async function loadSideThen(side: "a" | "b"): Promise<void> {
@@ -343,7 +337,7 @@
       <h2 class="cw-step-heading">Drop both layers</h2>
       <div class="cw-dropzones">
         <div data-testid="dropzone-a">
-          <label class="cw-zone-label">Previous</label>
+          <label class="cw-zone-label">Version A</label>
           <DropZone
             bind:files={filesA}
             disabled={running || loadingSide === "a"}
@@ -351,7 +345,7 @@
           />
         </div>
         <div data-testid="dropzone-b">
-          <label class="cw-zone-label">New</label>
+          <label class="cw-zone-label">Version B</label>
           <DropZone
             bind:files={filesB}
             disabled={running || loadingSide === "b"}
@@ -359,8 +353,8 @@
           />
         </div>
       </div>
-      {#if loadingSide === "a"}<p class="cw-status">Loading Previous…</p>{/if}
-      {#if loadingSide === "b"}<p class="cw-status">Loading New…</p>{/if}
+      {#if loadingSide === "a"}<p class="cw-status">Loading Version A…</p>{/if}
+      {#if loadingSide === "b"}<p class="cw-status">Loading Version B…</p>{/if}
       {#if loadError}<div class="cw-error">{loadError}</div>{/if}
     </section>
 
@@ -370,7 +364,7 @@
         <div class="cw-cols">
           {#if colsA}
             <fieldset class="cw-fieldset">
-              <legend>Previous</legend>
+              <legend>Version A</legend>
               <label class="cw-field">
                 <span>Code</span>
                 <select bind:value={aCodeCol} disabled={running}>
@@ -389,7 +383,7 @@
           {/if}
           {#if colsB}
             <fieldset class="cw-fieldset">
-              <legend>New</legend>
+              <legend>Version B</legend>
               <label class="cw-field">
                 <span>Code</span>
                 <select bind:value={bCodeCol} disabled={running}>
@@ -490,10 +484,10 @@
       {#if overlayGeoJSON}
         <div class="cw-view-toolbar">
           <div class="cw-mode-btns" role="group" aria-label="View mode">
-            <button class="cw-mode-btn" class:active={showSide === "both"} onclick={() => showSide = "both"}>Overview</button>
-            <button class="cw-mode-btn" class:active={showSide === "a"} onclick={() => showSide = "a"}>Previous</button>
-            <button class="cw-mode-btn" class:active={showSide === "b"} onclick={() => showSide = "b"}>New</button>
+            <button class="cw-mode-btn" class:active={showSide === "a"} onclick={() => showSide = "a"}>Version A</button>
+            <button class="cw-mode-btn" class:active={showSide === "b"} onclick={() => showSide = "b"}>Version B</button>
           </div>
+          <p class="cw-kbd-hint"><kbd>[</kbd><kbd>]</kbd> to cycle</p>
         </div>
       {/if}
 
@@ -761,6 +755,23 @@
 
   .cw-mode-btn:first-child {
     border-left: none;
+  }
+
+  .cw-kbd-hint {
+    margin: 0;
+    font-size: 0.7rem;
+    color: #9ca3af;
+    text-align: right;
+  }
+
+  .cw-kbd-hint kbd {
+    font-family: inherit;
+    font-size: 0.7rem;
+    padding: 0.05rem 0.2rem;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    background: #f9fafb;
+    color: #6b7280;
   }
 
   .cw-mode-btn:hover {

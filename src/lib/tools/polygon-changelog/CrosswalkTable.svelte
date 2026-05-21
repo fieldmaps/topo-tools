@@ -147,10 +147,10 @@
       <thead>
         <tr>
           <th>Class</th>
-          <th>Previous code</th>
-          <th>Previous name</th>
-          <th>New code</th>
-          <th>New name</th>
+          <th>Version A code</th>
+          <th>Version A name</th>
+          <th>Version B code</th>
+          <th>Version B name</th>
         </tr>
       </thead>
       <tbody>

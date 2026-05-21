@@ -177,8 +177,13 @@ export async function loadFile(
   // Single-quote the path for SQL string literals (double quotes = identifiers in SQL)
   const sqlPath = "'" + filePath.replace(/'/g, "''") + "'";
 
-  // Load into raw_layer with stable fid
-  const readFn = isParquet ? `read_parquet(${sqlPath})` : `ST_Read(${sqlPath})`;
+  // Load into raw_layer with stable fid.
+  // GeoPackage: LIST_ALL_TABLES=NO tells GDAL to only read tables registered in
+  // gpkg_contents, preventing stoi("") crashes on unregistered SQLite metadata tables.
+  const gpkgOpts = filePath.toLowerCase().endsWith(".gpkg")
+    ? `, open_options=['LIST_ALL_TABLES=NO']`
+    : "";
+  const readFn = isParquet ? `read_parquet(${sqlPath})` : `ST_Read(${sqlPath}${gpkgOpts})`;
   await conn.query(`
     CREATE OR REPLACE TABLE ${rawName} AS
     SELECT *, row_number() OVER () AS fid FROM ${readFn}
@@ -289,7 +294,10 @@ export async function loadClipFile(
   }
 
   const sqlPath = "'" + filePath.replace(/'/g, "''") + "'";
-  const readFn = isParquet ? `read_parquet(${sqlPath})` : `ST_Read(${sqlPath})`;
+  const gpkgOpts = filePath.toLowerCase().endsWith(".gpkg")
+    ? `, open_options=['LIST_ALL_TABLES=NO']`
+    : "";
+  const readFn = isParquet ? `read_parquet(${sqlPath})` : `ST_Read(${sqlPath}${gpkgOpts})`;
 
   // Use LIMIT 0 to detect schema without materializing the full (potentially large) file.
   await conn.query(`CREATE TABLE clip_raw AS SELECT * FROM ${readFn} LIMIT 0`);
