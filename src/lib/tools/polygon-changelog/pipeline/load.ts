@@ -56,6 +56,7 @@ export async function dropPriorRun(conn: AsyncDuckDBConnection): Promise<void> {
     "cw_pairs",
     "cw_pairs_classified",
     "cw_polygon_class",
+    "cw_changelog",
     "cw_overlay_render",
   ];
   for (const t of tables) await conn.query(`DROP TABLE IF EXISTS ${t}`);

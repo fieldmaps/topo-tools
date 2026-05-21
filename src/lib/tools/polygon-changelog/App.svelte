@@ -52,7 +52,7 @@
   let bNameCol = $state<string | null>(null);
 
   // Thresholds
-  let tauMatch = $state(0.5);
+  let tauMatch = $state(0.67);
   let tauSame = $state(0.98);
 
   // Pipeline run state
@@ -81,8 +81,18 @@
     initDuckDB();
   });
 
-  // Auto-load each side when files are dropped. Don't kick off the full
-  // pipeline yet — wait for the user to confirm columns and press Run.
+  // Auto-run when both sides are loaded. Re-dropping a file resets loadedA/B
+  // to false then true again, which re-triggers the run.
+  $effect(() => {
+    const a = loadedA;
+    const b = loadedB;
+    if (!a || !b) return;
+    untrack(() => {
+      if (!running) handleRun();
+    });
+  });
+
+  // Auto-load each side when files are dropped.
   // Re-dropping after a run reloads: stale dropdowns/results would otherwise
   // linger because loadedA/loadedB stayed true from the prior run.
   $effect(() => {
@@ -152,8 +162,6 @@
       loadingSide = null;
     }
   }
-
-  const readyToRun = $derived(loadedA && loadedB && !running);
 
   async function handleRun(): Promise<void> {
     error = null;
@@ -310,7 +318,7 @@
     {/if}
 
     <section class="cw-step">
-      <h2 class="cw-step-heading">Step 1 — Drop both layers</h2>
+      <h2 class="cw-step-heading">Drop both layers</h2>
       <div class="cw-dropzones">
         <div data-testid="dropzone-a">
           <label class="cw-zone-label">Previous</label>
@@ -336,7 +344,7 @@
 
     {#if loadedA || loadedB}
       <section class="cw-step">
-        <h2 class="cw-step-heading">Step 2 — Pick code &amp; name columns</h2>
+        <h2 class="cw-step-heading">Pick code &amp; name columns</h2>
         <div class="cw-cols">
           {#if colsA}
             <fieldset class="cw-fieldset">
@@ -381,7 +389,7 @@
     {/if}
 
     <section class="cw-step">
-      <h2 class="cw-step-heading">Step 3 — Thresholds</h2>
+      <h2 class="cw-step-heading">Thresholds</h2>
       <label class="cw-slider">
         <span>Match overlap — {Math.round(tauMatch * 100)}%</span>
         <input
@@ -417,15 +425,6 @@
         </label>
       </details>
 
-      <button
-        class="cw-run"
-        type="button"
-        onclick={handleRun}
-        disabled={!readyToRun}
-        data-testid="run-button"
-      >
-        {running ? "Running…" : reclassifying ? "Reclassifying…" : "Run"}
-      </button>
     </section>
 
     {#if currentStage > 0 || errorStage > 0}
@@ -453,15 +452,9 @@
         <h2 class="cw-step-heading">Download</h2>
         <div class="cw-downloads">
           <DownloadMenu
-            primaryLabel="Overlay GeoJSON"
-            filenameStem={fileStem(filesA)}
-            cachedGeoJSON={overlayGeoJSON}
-            exportSource="crosswalk_overlay"
-          />
-          <DownloadMenu
             primaryLabel="Changelog CSV"
             filenameStem={fileStem(filesA)}
-            exportSource="crosswalk_pairs"
+            exportSource="crosswalk_changelog"
           />
         </div>
       </section>
@@ -618,24 +611,6 @@
   }
   .cw-advanced > .cw-slider {
     margin-top: 0.5rem;
-  }
-  .cw-run {
-    margin-top: 0.5rem;
-    padding: 0.55rem 0.8rem;
-    background: #1d4ed8;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .cw-run:hover:not(:disabled) {
-    background: #1e40af;
-  }
-  .cw-run:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
   .cw-status {
     font-size: 0.85rem;

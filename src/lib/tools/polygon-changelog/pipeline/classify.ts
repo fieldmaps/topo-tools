@@ -230,4 +230,37 @@ async function writeBack(
   // Stage 6 (table.ts) reconstructs the singleton rows for the table from
   // cw_polygon_class with NULL on the other side.
   void singletons;
+
+  await conn.query("DROP TABLE IF EXISTS cw_changelog");
+  await conn.query(`--sql
+    CREATE TABLE cw_changelog AS
+    SELECT ak.code AS code_a, bk.code AS code_b, p.relationship_class
+    FROM cw_pairs_classified p
+    LEFT JOIN cw_a_keyed ak ON ak.fid = p.a_fid
+    LEFT JOIN cw_b_keyed bk ON bk.fid = p.b_fid
+
+    UNION ALL
+
+    SELECT ak.code AS code_a, NULL AS code_b, pc.relationship_class
+    FROM cw_polygon_class pc
+    JOIN (
+      SELECT cluster_id, SUM(CASE WHEN side='b' THEN 1 ELSE 0 END) AS nb
+      FROM cw_polygon_class GROUP BY cluster_id
+    ) cnt ON cnt.cluster_id = pc.cluster_id
+    LEFT JOIN cw_a_keyed ak ON ak.fid = pc.fid
+    WHERE pc.side = 'a' AND cnt.nb = 0
+
+    UNION ALL
+
+    SELECT NULL AS code_a, bk.code AS code_b, pc.relationship_class
+    FROM cw_polygon_class pc
+    JOIN (
+      SELECT cluster_id, SUM(CASE WHEN side='a' THEN 1 ELSE 0 END) AS na
+      FROM cw_polygon_class GROUP BY cluster_id
+    ) cnt ON cnt.cluster_id = pc.cluster_id
+    LEFT JOIN cw_b_keyed bk ON bk.fid = pc.fid
+    WHERE pc.side = 'b' AND cnt.na = 0
+
+    ORDER BY relationship_class, code_a NULLS LAST, code_b NULLS LAST
+  `);
 }
