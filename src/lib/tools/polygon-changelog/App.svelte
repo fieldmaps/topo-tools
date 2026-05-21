@@ -34,15 +34,6 @@
     "removed",
   ];
 
-  const REL_COLORS: Record<RelClass, string> = {
-    unchanged: "#9ec5ab",
-    modified: "#e5b250",
-    merge: "#5a8fd8",
-    split: "#e07550",
-    complex: "#b25dab",
-    created: "#6cc46c",
-    removed: "#d35a5a",
-  };
 
   // Input state
   let filesA = $state<File[]>([]);
@@ -472,25 +463,6 @@
       </section>
     {/if}
 
-    {#if overlayGeoJSON}
-      <section class="cw-step">
-        <h2 class="cw-step-heading">Filter by class</h2>
-        <div class="cw-class-filters">
-          {#each ALL_CLASSES as c (c)}
-            <label class="cw-class-toggle">
-              <input
-                type="checkbox"
-                checked={visibleClasses.has(c)}
-                onchange={() => toggleClass(c)}
-              />
-              <span class="cw-swatch" style="background:{REL_COLORS[c]}"></span>
-              <span class="cw-class-name">{c}</span>
-            </label>
-          {/each}
-        </div>
-      </section>
-    {/if}
-
     <p class="cw-privacy">Your files never leave your device.</p>
   </aside>
 
@@ -512,6 +484,7 @@
         {selectedClusterId}
         {visibleClasses}
         onRowClick={setSelected}
+        onToggleClass={toggleClass}
       />
     </div>
   </div>
@@ -707,26 +680,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-  }
-  .cw-class-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-  }
-  .cw-class-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: 0.75rem;
-    cursor: pointer;
-    text-transform: capitalize;
-  }
-  .cw-swatch {
-    display: inline-block;
-    width: 11px;
-    height: 11px;
-    border-radius: 2px;
-    border: 1px solid rgba(0, 0, 0, 0.1);
   }
   .cw-privacy {
     margin: 0;

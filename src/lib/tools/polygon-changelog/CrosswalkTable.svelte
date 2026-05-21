@@ -6,11 +6,13 @@
     selectedClusterId = null,
     visibleClasses = null,
     onRowClick,
+    onToggleClass,
   }: {
     rows?: TableRow[];
     selectedClusterId?: number | null;
     visibleClasses?: Set<RelClass> | null;
     onRowClick?: (clusterId: number | null) => void;
+    onToggleClass?: (c: RelClass) => void;
   } = $props();
 
   let search = $state("");
@@ -123,6 +125,21 @@
       bind:value={search}
       aria-label="Search"
     />
+    {#if visibleClasses && onToggleClass}
+      <div class="cw-class-filters">
+        {#each REL_ORDER as c (c)}
+          <label class="cw-class-toggle">
+            <input
+              type="checkbox"
+              checked={visibleClasses.has(c)}
+              onchange={() => onToggleClass(c)}
+            />
+            <span class="cw-swatch" style="background:{REL_COLORS[c]}"></span>
+            <span class="cw-class-name">{c}</span>
+          </label>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <div class="cw-table-scroll">
@@ -195,6 +212,9 @@
     min-height: 0;
   }
   .cw-table-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
     padding: 0.5rem;
     background: #f9fafb;
     border-bottom: 1px solid #e5e7eb;
@@ -205,6 +225,26 @@
     border: 1px solid #d1d5db;
     border-radius: 4px;
     font-size: 0.875rem;
+  }
+  .cw-class-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .cw-class-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    text-transform: capitalize;
+  }
+  .cw-swatch {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
   }
   .cw-table-scroll {
     flex: 1;
