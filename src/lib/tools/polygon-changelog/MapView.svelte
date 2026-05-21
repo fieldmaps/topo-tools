@@ -3,14 +3,13 @@
     ExpressionSpecification,
     FilterSpecification,
     GeoJSONSource,
-    LayerSpecification,
     Map as MaplibreMap,
     MapMouseEvent,
-    StyleSpecification,
   } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { onDestroy, onMount } from "svelte";
   import { createSpin } from "$lib/utils/spin";
+  import { loadStyle, polyFilter, lineWidth } from "$lib/utils/mapStyle";
 
   let {
     overlayGeojson = null,
@@ -19,6 +18,7 @@
     bounds = null,
     selectedClusterId = null,
     visibleClasses = null,
+    showSide = "both" as "both" | "a" | "b",
     onClusterClick,
   }: {
     overlayGeojson?: string | null;
@@ -27,6 +27,7 @@
     bounds?: [number, number, number, number] | null;
     selectedClusterId?: number | null;
     visibleClasses?: Set<string> | null;
+    showSide?: "both" | "a" | "b";
     onClusterClick?: (id: number | null) => void;
   } = $props();
 
@@ -37,26 +38,6 @@
   let outlineBUrl: string | undefined;
   let styleReady = false;
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
-
-  const polyFilter: FilterSpecification = [
-    "match",
-    ["geometry-type"],
-    ["Polygon", "MultiPolygon"],
-    true,
-    false,
-  ];
-
-  const lineWidth = [
-    "interpolate",
-    ["linear"],
-    ["zoom"],
-    4,
-    0.2,
-    10,
-    0.6,
-    14,
-    1,
-  ] as unknown as number;
 
   // Color palette per relationship_class. The palette intentionally keeps
   // unchanged a calm desaturated green so changed classes pop visually.
@@ -107,36 +88,62 @@
     ] as unknown as ExpressionSpecification;
   }
 
+  function buildFillFilter(): FilterSpecification {
+    const conditions: FilterSpecification[] = [polyFilter];
+    if (visibleClasses != null) {
+      conditions.push(["match", ["get", "relationship_class"], Array.from(visibleClasses), true, false] as FilterSpecification);
+    }
+    if (showSide === "a") {
+      conditions.push(["!=", ["get", "piece_side"], "b_only"] as FilterSpecification);
+    } else if (showSide === "b") {
+      conditions.push(["!=", ["get", "piece_side"], "a_only"] as FilterSpecification);
+    }
+    return conditions.length === 1 ? conditions[0] : (["all", ...conditions] as FilterSpecification);
+  }
+
   $effect(() => {
-    // Visibility filter on the overlay fill: hide pieces whose class is filtered out.
+    // Read reactive deps before any early return so Svelte tracks them.
+    const filter = buildFillFilter();
     if (!map || !styleReady) return;
     const layer = "cw-overlay-fill";
     if (!map.getLayer(layer)) return;
-    if (visibleClasses == null) {
-      map.setFilter(layer, polyFilter);
-      return;
-    }
-    const classList = Array.from(visibleClasses);
-    map.setFilter(layer, [
-      "all",
-      polyFilter,
-      ["match", ["get", "relationship_class"], classList, true, false],
-    ] as FilterSpecification);
+    map.setFilter(layer, filter);
   });
 
   $effect(() => {
-    // Selection styling: update fill-opacity and the highlight outline filter.
-    if (!map || !styleReady) return;
+    // Read reactive deps before any early return so Svelte tracks them.
     const opExpr = fillOpacityExpr();
+    const highlightFilter: FilterSpecification =
+      selectedClusterId == null
+        ? (["==", ["get", "cluster_id"], -1] as FilterSpecification)
+        : (["==", ["get", "cluster_id"], selectedClusterId] as FilterSpecification);
+    if (!map || !styleReady) return;
     if (map.getLayer("cw-overlay-fill")) {
       map.setPaintProperty("cw-overlay-fill", "fill-opacity", opExpr);
     }
-    const highlightFilter: FilterSpecification =
-      selectedClusterId == null
-        ? (["==", ["get", "cluster_id"], -1] as FilterSpecification) // matches nothing
-        : (["==", ["get", "cluster_id"], selectedClusterId] as FilterSpecification);
     if (map.getLayer("cw-highlight-line")) {
       map.setFilter("cw-highlight-line", highlightFilter);
+    }
+  });
+
+  $effect(() => {
+    // Outline visibility driven by showSide.
+    // Read reactive deps before any early return.
+    const side = showSide;
+    if (!map || !styleReady) return;
+    const aLayer = "cw-outline-a-line";
+    const bLayer = "cw-outline-b-line";
+    if (!map.getLayer(aLayer) || !map.getLayer(bLayer)) return;
+
+    if (side === "a") {
+      map.setLayoutProperty(aLayer, "visibility", "visible");
+      map.setLayoutProperty(bLayer, "visibility", "none");
+    } else if (side === "b") {
+      map.setLayoutProperty(aLayer, "visibility", "none");
+      map.setLayoutProperty(bLayer, "visibility", "visible");
+    } else {
+      map.setLayoutProperty(aLayer, "visibility", "visible");
+      map.setLayoutProperty(bLayer, "visibility", "visible");
     }
   });
 
@@ -208,26 +215,17 @@
       return;
     }
     map.addSource(id, { type: "geojson", data: dataUrl });
-    // Side A (Previous) renders as a dashed darker outline; Side B (New) as a solid
-    // slightly lighter outline. Both render above the fill but below the
-    // highlight line.
     const beforeId = map.getLayer("cw-highlight-line") ? "cw-highlight-line" : undefined;
+    const outlineWidth = ["interpolate", ["linear"], ["zoom"], 4, 1.5, 10, 2.5, 14, 4] as unknown as number;
     map.addLayer(
       {
         id: `cw-outline-${side}-line`,
         type: "line",
         source: id,
-        paint:
-          side === "a"
-            ? {
-                "line-color": "#222",
-                "line-width": lineWidth,
-                "line-dasharray": [2, 2],
-              }
-            : {
-                "line-color": "#000",
-                "line-width": lineWidth,
-              },
+        paint: {
+          "line-color": "#000",
+          "line-width": outlineWidth,
+        },
       },
       beforeId,
     );
@@ -248,51 +246,6 @@
     outlineBUrl = URL.createObjectURL(new Blob([data], { type: "application/json" }));
     addOutline("b", outlineBUrl);
   });
-
-  // Local fallback basemap — same approach as the shared MapView so offline
-  // mode still shows land vs water.
-  const LAND_SOURCE_ID = "ne-land";
-  const LAND_LAYER_ID = "ne-land-fill";
-  const LAND_URL = "/data/ne_50m_land.geojson";
-  const WATER_COLOR = "#dde6ed";
-  const LAND_COLOR = "#f5f5f3";
-
-  const fallbackStyle: StyleSpecification = {
-    version: 8,
-    projection: { type: "globe" },
-    sources: { [LAND_SOURCE_ID]: { type: "geojson", data: LAND_URL } },
-    layers: [
-      { id: "background", type: "background", paint: { "background-color": WATER_COLOR } },
-      {
-        id: LAND_LAYER_ID,
-        type: "fill",
-        source: LAND_SOURCE_ID,
-        paint: { "fill-color": LAND_COLOR },
-      },
-    ],
-  };
-
-  async function loadStyle(): Promise<StyleSpecification> {
-    try {
-      const remote = (await fetch("https://tiles.openfreemap.org/styles/positron").then((r) =>
-        r.json(),
-      )) as StyleSpecification & { sources: Record<string, unknown> };
-      remote.projection = { type: "globe" };
-      remote.sources[LAND_SOURCE_ID] = { type: "geojson", data: LAND_URL };
-      const landLayer: LayerSpecification = {
-        id: LAND_LAYER_ID,
-        type: "fill",
-        source: LAND_SOURCE_ID,
-        paint: { "fill-color": LAND_COLOR },
-      };
-      const bgIdx = remote.layers.findIndex((l) => l.type === "background");
-      const insertAt = bgIdx >= 0 ? bgIdx + 1 : 0;
-      remote.layers.splice(insertAt, 0, landLayer);
-      return remote;
-    } catch {
-      return fallbackStyle;
-    }
-  }
 
   function handleMapClick(e: MapMouseEvent): void {
     if (!map || !onClusterClick) return;

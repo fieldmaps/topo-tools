@@ -1,14 +1,12 @@
 <script lang="ts">
   import type {
-    FilterSpecification,
     GeoJSONSource,
-    LayerSpecification,
     Map as MaplibreMap,
-    StyleSpecification,
   } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { onDestroy, onMount } from "svelte";
   import { createSpin } from "$lib/utils/spin";
+  import { loadStyle, polyFilter, lineWidth } from "$lib/utils/mapStyle";
 
   let {
     geojson = null,
@@ -32,15 +30,6 @@
   let origBlobUrl: string | undefined;
   let clipBlobUrl: string | undefined;
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
-  const polyFilter: FilterSpecification = [
-    "match",
-    ["geometry-type"],
-    ["Polygon", "MultiPolygon"],
-    true,
-    false,
-  ];
-
-  const lineWidth = ["interpolate", ["linear"], ["zoom"], 4, 0.2, 10, 0.6, 14, 1] as unknown as number;
 
   // Dedicated effect for bounds — fires whenever bounds changes, independent of data effects.
   $effect(() => {
@@ -104,57 +93,6 @@
     if (map.isStyleLoaded()) apply();
     else map.once("load", () => apply());
   });
-
-  // Local fallback: solid water + land polygons over a Natural Earth GeoJSON.
-  // Used both when offline (style fetch fails) and as the bedrock layer
-  // underneath OpenFreeMap when online — so if any tile request fails, the
-  // user still sees land vs water rather than blank background.
-  const LAND_SOURCE_ID = "ne-land";
-  const LAND_LAYER_ID = "ne-land-fill";
-  const LAND_URL = "/data/ne_50m_land.geojson";
-  const WATER_COLOR = "#dde6ed";
-  const LAND_COLOR = "#f5f5f3";
-
-  const fallbackStyle: StyleSpecification = {
-    version: 8,
-    projection: { type: "globe" },
-    sources: {
-      [LAND_SOURCE_ID]: { type: "geojson", data: LAND_URL },
-    },
-    layers: [
-      { id: "background", type: "background", paint: { "background-color": WATER_COLOR } },
-      {
-        id: LAND_LAYER_ID,
-        type: "fill",
-        source: LAND_SOURCE_ID,
-        paint: { "fill-color": LAND_COLOR },
-      },
-    ],
-  };
-
-  async function loadStyle(): Promise<StyleSpecification> {
-    try {
-      const remote = (await fetch("https://tiles.openfreemap.org/styles/positron").then((r) =>
-        r.json(),
-      )) as StyleSpecification & { sources: Record<string, unknown> };
-      remote.projection = { type: "globe" };
-      remote.sources[LAND_SOURCE_ID] = { type: "geojson", data: LAND_URL };
-      const landLayer: LayerSpecification = {
-        id: LAND_LAYER_ID,
-        type: "fill",
-        source: LAND_SOURCE_ID,
-        paint: { "fill-color": LAND_COLOR },
-      };
-      // Insert just after the first background layer so OpenFreeMap's own
-      // land/water/road layers paint on top of our bedrock when online.
-      const bgIdx = remote.layers.findIndex((l) => l.type === "background");
-      const insertAt = bgIdx >= 0 ? bgIdx + 1 : 0;
-      remote.layers.splice(insertAt, 0, landLayer);
-      return remote;
-    } catch {
-      return fallbackStyle;
-    }
-  }
 
   onMount(async () => {
     if (!container) return;

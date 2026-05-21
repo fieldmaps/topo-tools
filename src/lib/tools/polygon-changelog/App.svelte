@@ -73,13 +73,34 @@
   let selectedClusterId = $state<number | null>(null);
   let visibleClasses = $state<Set<RelClass>>(new Set(ALL_CLASSES));
 
+  // Comparison mode
+  let showSide = $state<"both" | "a" | "b">("both");
+
+  const SIDES: Array<"both" | "a" | "b"> = ["both", "a", "b"];
+
+  function handleKey(e: KeyboardEvent): void {
+    if (!overlayGeoJSON) return;
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    if (e.key === "]") {
+      const i = SIDES.indexOf(showSide);
+      showSide = SIDES[(i + 1) % SIDES.length];
+    } else if (e.key === "[") {
+      const i = SIDES.indexOf(showSide);
+      showSide = SIDES[(i + SIDES.length - 1) % SIDES.length];
+    }
+  }
+
+  onMount(() => {
+    initDuckDB();
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  });
+
   // Debounced reclassify on slider changes
   let reclassifyTimer: ReturnType<typeof setTimeout> | undefined;
   let reclassifying = $state(false);
 
-  onMount(() => {
-    initDuckDB();
-  });
 
   // Auto-run when both sides are loaded. Re-dropping a file resets loadedA/B
   // to false then true again, which re-triggers the run.
@@ -136,6 +157,7 @@
     stageLabel = "";
     error = null;
     loadError = null;
+    showSide = "both";
   }
 
   async function loadSideThen(side: "a" | "b"): Promise<void> {
@@ -465,6 +487,16 @@
 
   <div class="cw-result">
     <div class="cw-map-pane">
+      {#if overlayGeoJSON}
+        <div class="cw-view-toolbar">
+          <div class="cw-mode-btns" role="group" aria-label="View mode">
+            <button class="cw-mode-btn" class:active={showSide === "both"} onclick={() => showSide = "both"}>Overview</button>
+            <button class="cw-mode-btn" class:active={showSide === "a"} onclick={() => showSide = "a"}>Previous</button>
+            <button class="cw-mode-btn" class:active={showSide === "b"} onclick={() => showSide = "b"}>New</button>
+          </div>
+        </div>
+      {/if}
+
       <MapView
         overlayGeojson={overlayGeoJSON}
         outlineAGeojson={outlineAGeoJSON}
@@ -473,6 +505,7 @@
         {selectedClusterId}
         {visibleClasses}
         onClusterClick={setSelected}
+        {showSide}
       />
     </div>
     <div class="cw-table-pane">
@@ -690,7 +723,56 @@
   .cw-map-pane {
     min-height: 0;
     border-bottom: 1px solid #e5e7eb;
+    position: relative;
   }
+
+  .cw-view-toolbar {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+    pointer-events: auto;
+  }
+
+  .cw-mode-btns {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+
+  .cw-mode-btn {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border: none;
+    background: #fff;
+    color: #6b7280;
+    cursor: pointer;
+    border-left: 1px solid #e5e7eb;
+    transition: background 0.1s, color 0.1s;
+  }
+
+  .cw-mode-btn:first-child {
+    border-left: none;
+  }
+
+  .cw-mode-btn:hover {
+    background: #f3f4f6;
+    color: #111;
+  }
+
+  .cw-mode-btn.active {
+    background: #111;
+    color: #fff;
+  }
+
   .cw-table-pane {
     min-height: 0;
   }
