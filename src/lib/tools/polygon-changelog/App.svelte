@@ -290,7 +290,7 @@
   }
 
   function fileStem(files: File[]): string {
-    if (files.length === 0) return "crosswalk";
+    if (files.length === 0) return "changelog";
     return files[0].name.replace(/\.[^.]+$/, "");
   }
 
@@ -303,7 +303,7 @@
   <aside class="cw-sidebar">
     <header>
       <a class="cw-back" href="/">← Topology Tools</a>
-      <h1>Boundary Cross-walk</h1>
+      <h1>Changelog</h1>
       <p class="cw-blurb">
         Compare two versions of a polygon layer (e.g. ADM2 across census rounds) and classify each
         unit as unchanged, modified, merged, split, created, or removed. Drop both versions; the
@@ -464,7 +464,7 @@
             exportSource="crosswalk_overlay"
           />
           <DownloadMenu
-            primaryLabel="Cross-walk CSV"
+            primaryLabel="Changelog CSV"
             filenameStem={fileStem(filesA)}
             exportSource="crosswalk_pairs"
           />

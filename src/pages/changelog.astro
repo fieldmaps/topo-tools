@@ -1,0 +1,11 @@
+---
+import Layout from "../layouts/Layout.astro";
+import App from "$lib/tools/polygon-changelog/App.svelte";
+---
+
+<Layout
+  title="Changelog — compare two polygon layers in your browser"
+  description="Browser-only tool that compares two versions of a polygon layer and classifies each unit as unchanged, modified, merged, split, created, or removed."
+>
+  <App client:load />
+</Layout>
