@@ -383,7 +383,7 @@
     <section class="cw-step">
       <h2 class="cw-step-heading">Step 3 — Thresholds</h2>
       <label class="cw-slider">
-        <span>τ_match = {tauMatch.toFixed(2)}</span>
+        <span>Match overlap — {Math.round(tauMatch * 100)}%</span>
         <input
           type="range"
           min="0"
@@ -394,24 +394,28 @@
           disabled={running}
         />
         <p class="cw-hint">
-          Minimum coverage (in either direction) for a pair to count as related. Lower = more matches.
+          How much of either polygon must overlap the other for the two to be considered related. Lower = more matches.
         </p>
       </label>
-      <label class="cw-slider">
-        <span>τ_same = {tauSame.toFixed(2)}</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          bind:value={tauSame}
-          oninput={scheduleReclassify}
-          disabled={running}
-        />
-        <p class="cw-hint">
-          IoU above which a 1:1 cluster is treated as <em>unchanged</em> rather than <em>modified</em>.
-        </p>
-      </label>
+
+      <details class="cw-advanced">
+        <summary>Advanced</summary>
+        <label class="cw-slider">
+          <span>Unchanged overlap — {Math.round(tauSame * 100)}%</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={tauSame}
+            oninput={scheduleReclassify}
+            disabled={running}
+          />
+          <p class="cw-hint">
+            How much a 1:1 matched pair must overlap to be classified as <em>unchanged</em> rather than <em>modified</em>.
+          </p>
+        </label>
+      </details>
 
       <button
         class="cw-run"
@@ -599,6 +603,21 @@
     color: #6b7280;
     margin: 0;
     line-height: 1.3;
+  }
+  .cw-advanced {
+    margin-top: 0.5rem;
+  }
+  .cw-advanced summary {
+    font-size: 0.8rem;
+    color: #6b7280;
+    cursor: pointer;
+    user-select: none;
+  }
+  .cw-advanced summary:hover {
+    color: #374151;
+  }
+  .cw-advanced > .cw-slider {
+    margin-top: 0.5rem;
   }
   .cw-run {
     margin-top: 0.5rem;
