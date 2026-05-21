@@ -110,9 +110,21 @@
     return "none";
   }
 
+  let scrollContainer: HTMLDivElement | undefined;
+  let fromTableClick = false;
+
+  $effect(() => {
+    const id = selectedClusterId;
+    if (fromTableClick) { fromTableClick = false; return; }
+    if (id == null || !scrollContainer) return;
+    const row = scrollContainer.querySelector<HTMLTableRowElement>(`tr[data-cluster-id="${id}"]`);
+    row?.scrollIntoView({ block: "center" });
+  });
+
   function handleRow(c: Cluster): void {
     if (!onRowClick) return;
     const newId = c.cluster_id === selectedClusterId ? null : c.cluster_id;
+    fromTableClick = true;
     onRowClick(newId);
   }
 </script>
@@ -142,7 +154,7 @@
     {/if}
   </div>
 
-  <div class="cw-table-scroll">
+  <div class="cw-table-scroll" bind:this={scrollContainer}>
     <table>
       <thead>
         <tr>
