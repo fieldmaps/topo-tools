@@ -8,6 +8,7 @@
   } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { onDestroy, onMount } from "svelte";
+  import { createSpin } from "$lib/utils/spin";
 
   let {
     geojson = null,
@@ -30,34 +31,7 @@
   let blobUrl: string | undefined;
   let origBlobUrl: string | undefined;
   let clipBlobUrl: string | undefined;
-  let spinning = false;
-  let animFrame: number | undefined;
-  let lastTime: number | undefined;
-  const SPIN_SPEED = 6;
-
-  function spinStep(timestamp: number) {
-    if (!spinning || !map) return;
-    if (lastTime !== undefined) {
-      const delta = (timestamp - lastTime) / 1000;
-      const center = map.getCenter();
-      center.lng -= SPIN_SPEED * delta;
-      map.setCenter(center);
-    }
-    lastTime = timestamp;
-    animFrame = requestAnimationFrame(spinStep);
-  }
-
-  function startSpin() {
-    spinning = true;
-    lastTime = undefined;
-    animFrame = requestAnimationFrame(spinStep);
-  }
-
-  function stopSpin() {
-    if (!spinning) return;
-    spinning = false;
-    if (animFrame !== undefined) cancelAnimationFrame(animFrame);
-  }
+  const { start: startSpin, stop: stopSpin } = createSpin(() => map);
   const polyFilter: FilterSpecification = [
     "match",
     ["geometry-type"],

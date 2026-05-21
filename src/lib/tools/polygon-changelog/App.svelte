@@ -736,7 +736,7 @@
   }
   .cw-result {
     display: grid;
-    grid-template-rows: 60% 40%;
+    grid-template-rows: 65% 35%;
     height: 100dvh;
     min-width: 0;
   }
@@ -750,7 +750,7 @@
   @media (min-width: 1280px) {
     .cw-result {
       grid-template-rows: 1fr;
-      grid-template-columns: 60% 40%;
+      grid-template-columns: 65% 35%;
     }
     .cw-map-pane {
       border-right: 1px solid #e5e7eb;

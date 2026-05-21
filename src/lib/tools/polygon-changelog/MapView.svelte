@@ -10,6 +10,7 @@
   } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { onDestroy, onMount } from "svelte";
+  import { createSpin } from "$lib/utils/spin";
 
   let {
     overlayGeojson = null,
@@ -35,6 +36,7 @@
   let outlineAUrl: string | undefined;
   let outlineBUrl: string | undefined;
   let styleReady = false;
+  const { start: startSpin, stop: stopSpin } = createSpin(() => map);
 
   const polyFilter: FilterSpecification = [
     "match",
@@ -144,6 +146,7 @@
     function apply() {
       if (!map || !b) return;
       const [minLng, minLat, maxLng, maxLat] = b;
+      stopSpin();
       map.fitBounds(
         [
           [minLng, minLat],
@@ -315,6 +318,10 @@
     });
     map.once("load", () => {
       styleReady = true;
+      startSpin();
+      map?.on("mousedown", stopSpin);
+      map?.on("touchstart", stopSpin);
+      map?.on("wheel", stopSpin);
       map?.on("click", handleMapClick);
       map?.on("mousemove", "cw-overlay-fill", () => {
         if (map) map.getCanvas().style.cursor = "pointer";
@@ -326,6 +333,7 @@
   });
 
   onDestroy(() => {
+    stopSpin();
     map?.remove();
     if (overlayUrl) URL.revokeObjectURL(overlayUrl);
     if (outlineAUrl) URL.revokeObjectURL(outlineAUrl);
