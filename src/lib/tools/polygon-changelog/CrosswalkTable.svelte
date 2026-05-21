@@ -108,11 +108,6 @@
     return "none";
   }
 
-  function fmtPct(v: number | null): string {
-    if (v == null || !Number.isFinite(v)) return "—";
-    return (v * 100).toFixed(1) + "%";
-  }
-
   function handleRow(c: Cluster): void {
     if (!onRowClick) return;
     const newId = c.cluster_id === selectedClusterId ? null : c.cluster_id;
@@ -139,9 +134,6 @@
           <th>Previous name</th>
           <th>New code</th>
           <th>New name</th>
-          <th>Cov A</th>
-          <th>Cov B</th>
-          <th>IoU</th>
         </tr>
       </thead>
       <tbody>
@@ -155,13 +147,11 @@
               data-cluster-id={c.cluster_id}
               data-relationship-class={c.relationship_class}
             >
-              {#if i === 0 || (span !== "a" && span !== "none")}
-                <td class="cw-class-cell">
-                  <span class="cw-class-badge" style="background:{REL_COLORS[r.relationship_class]}"
-                  >{r.relationship_class}</span>
+              {#if i === 0}
+                <td class="cw-class-cell" rowspan={c.rows.length}>
+                  <span class="cw-class-badge" style="background:{REL_COLORS[c.relationship_class]}"
+                  >{c.relationship_class}</span>
                 </td>
-              {:else if span === "a" && i === 0}
-                <!-- spanned -->
               {/if}
 
               <!-- Previous side: A code & name -->
@@ -185,10 +175,6 @@
                 <td>{r.b_code ?? "—"}</td>
                 <td>{r.b_name ?? "—"}</td>
               {/if}
-
-              <td class="cw-num">{fmtPct(r.coverage_a)}</td>
-              <td class="cw-num">{fmtPct(r.coverage_b)}</td>
-              <td class="cw-num">{fmtPct(r.iou)}</td>
             </tr>
           {/each}
         {/each}
@@ -279,11 +265,6 @@
     background: rgba(99, 102, 241, 0.05);
     border-left: 2px solid #a5b4fc;
     font-weight: 500;
-  }
-  .cw-num {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    color: #4b5563;
   }
   .cw-empty {
     padding: 1rem;
