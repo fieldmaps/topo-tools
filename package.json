@@ -19,29 +19,29 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
-    "@astrojs/svelte": "^8.1.0",
-    "@eslint/compat": "^2.0.5",
+    "@astrojs/svelte": "^8.1.1",
+    "@eslint/compat": "^2.1.0",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.9.1",
     "@vite-pwa/astro": "^1.2.0",
-    "astro": "^6.1.10",
-    "eslint": "^10.2.1",
+    "astro": "^6.3.6",
+    "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-astro": "^1.7.0",
-    "globals": "^17.5.0",
+    "globals": "^17.6.0",
     "prettier": "^3.8.3",
     "prettier-plugin-astro": "^0.14.1",
-    "svelte": "^5.55.5",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.59.1"
+    "svelte": "^5.55.9",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.4"
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "^1.33.1-dev53.0",
+    "@duckdb/duckdb-wasm": "^1.33.1-dev54.0",
     "buffer": "^6.0.3",
-    "fflate": "^0.8.2",
+    "fflate": "^0.8.3",
     "flatbush": "^4.5.1",
     "maplibre-gl": "^5.24.0",
-    "mapshaper": "^0.7.6",
-    "mproj": "^0.0.40"
+    "mapshaper": "^0.7.18",
+    "mproj": "^0.1.2"
   }
 }
