@@ -71,6 +71,13 @@
 
   // Selection / filter
   let selectedClusterId = $state<number | null>(null);
+  let hoveredClusterId = $state<number | null>(null);
+  let hoveredFid = $state<number | null>(null);
+  // The currently hovered row's both-side fids. Set by both map hover (via a
+  // tableRows lookup) and table hover. On a side toggle, hoveredFid is
+  // re-derived from this row so the same logical row stays highlighted with
+  // the correct side's fid — no flash, no stale per-side memory.
+  let hoveredRow = $state<{ cluster_id: number; a_fid: number | null; b_fid: number | null } | null>(null);
   let visibleClasses = $state<Set<RelClass>>(new Set(ALL_CLASSES));
 
   // Comparison mode
@@ -312,6 +319,53 @@
   function setSelected(id: number | null): void {
     selectedClusterId = id;
   }
+
+  function setHoveredFromMap(payload: { cluster_id: number | null; fid: number | null }): void {
+    hoveredClusterId = payload.cluster_id;
+    hoveredFid = payload.fid;
+    if (payload.cluster_id == null || payload.fid == null) {
+      hoveredRow = null;
+      return;
+    }
+    // Look up the row whose current-side fid matches the hovered polygon, so
+    // we know the other side's fid for free. A side toggle then re-derives
+    // hoveredFid from this row instead of needing a cursor re-query.
+    let found: { cluster_id: number; a_fid: number | null; b_fid: number | null } | null = null;
+    for (const r of tableRows) {
+      if (r.cluster_id !== payload.cluster_id) continue;
+      const matches = showSide === "a" ? r.a_fid === payload.fid : r.b_fid === payload.fid;
+      if (matches) {
+        found = { cluster_id: r.cluster_id, a_fid: r.a_fid, b_fid: r.b_fid };
+        break;
+      }
+    }
+    hoveredRow = found;
+  }
+
+  function setHoveredFromRow(payload: { cluster_id: number | null; a_fid: number | null; b_fid: number | null } | null): void {
+    if (payload == null || payload.cluster_id == null) {
+      hoveredRow = null;
+      hoveredClusterId = null;
+      hoveredFid = null;
+      return;
+    }
+    hoveredRow = { cluster_id: payload.cluster_id, a_fid: payload.a_fid, b_fid: payload.b_fid };
+    hoveredClusterId = payload.cluster_id;
+    hoveredFid = showSide === "a" ? payload.a_fid : payload.b_fid;
+  }
+
+  // Re-derive hoveredFid from the hovered row when the side toggles, so the
+  // same row stays highlighted with the correct side's fid. Works for both
+  // table-row hover and map hover (which populates hoveredRow via a tableRows
+  // lookup), so toggles never flash through a stale per-side memory.
+  $effect(() => {
+    const side = showSide;
+    const row = hoveredRow;
+    if (row == null) return;
+    untrack(() => {
+      hoveredFid = side === "a" ? row.a_fid : row.b_fid;
+    });
+  });
 </script>
 
 <div class="cw-layout">
@@ -497,8 +551,11 @@
         outlineBGeojson={outlineBGeoJSON}
         {bounds}
         {selectedClusterId}
+        {hoveredClusterId}
+        {hoveredFid}
         {visibleClasses}
         onClusterClick={setSelected}
+        onFeatureHover={setHoveredFromMap}
         {showSide}
       />
     </div>
@@ -506,8 +563,12 @@
       <CrosswalkTable
         rows={tableRows}
         {selectedClusterId}
+        {hoveredClusterId}
+        {hoveredFid}
+        {showSide}
         {visibleClasses}
         onRowClick={setSelected}
+        onRowHover={setHoveredFromRow}
         onToggleClass={toggleClass}
       />
     </div>
@@ -760,8 +821,13 @@
   .cw-kbd-hint {
     margin: 0;
     font-size: 0.7rem;
-    color: #9ca3af;
+    color: #6b7280;
     text-align: right;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 0.2rem 0.45rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   }
 
   .cw-kbd-hint kbd {
@@ -770,8 +836,8 @@
     padding: 0.05rem 0.2rem;
     border: 1px solid #d1d5db;
     border-radius: 3px;
-    background: #f9fafb;
-    color: #6b7280;
+    background: #f3f4f6;
+    color: #4b5563;
   }
 
   .cw-mode-btn:hover {

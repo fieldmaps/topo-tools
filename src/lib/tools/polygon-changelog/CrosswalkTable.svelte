@@ -4,14 +4,22 @@
   let {
     rows = [],
     selectedClusterId = null,
+    hoveredClusterId = null,
+    hoveredFid = null,
+    showSide = "b" as "a" | "b",
     visibleClasses = null,
     onRowClick,
+    onRowHover,
     onToggleClass,
   }: {
     rows?: TableRow[];
     selectedClusterId?: number | null;
+    hoveredClusterId?: number | null;
+    hoveredFid?: number | null;
+    showSide?: "a" | "b";
     visibleClasses?: Set<RelClass> | null;
     onRowClick?: (clusterId: number | null) => void;
+    onRowHover?: (payload: { cluster_id: number | null; a_fid: number | null; b_fid: number | null } | null) => void;
     onToggleClass?: (c: RelClass) => void;
   } = $props();
 
@@ -112,6 +120,7 @@
 
   let scrollContainer: HTMLDivElement | undefined;
   let fromTableClick = false;
+  let hoveredRowKey = $state<string | null>(null);
 
   $effect(() => {
     const id = selectedClusterId;
@@ -126,6 +135,44 @@
     const newId = c.cluster_id === selectedClusterId ? null : c.cluster_id;
     fromTableClick = true;
     onRowClick(newId);
+  }
+
+  function parseFid(v: string | undefined): number | null {
+    if (v == null || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function handleTableMouseover(e: MouseEvent): void {
+    const tr = (e.target as Element).closest("tr[data-row-key]") as HTMLElement | null;
+    const rowKey = tr?.dataset.rowKey ?? null;
+    if (rowKey === hoveredRowKey) return;
+    hoveredRowKey = rowKey;
+    if (!tr) {
+      onRowHover?.(null);
+      return;
+    }
+    onRowHover?.({
+      cluster_id: Number(tr.dataset.clusterId),
+      a_fid: parseFid(tr.dataset.aFid),
+      b_fid: parseFid(tr.dataset.bFid),
+    });
+  }
+
+  function handleTableMouseleave(): void {
+    if (hoveredRowKey === null) return;
+    hoveredRowKey = null;
+    onRowHover?.(null);
+  }
+
+  function isFeatureHovered(r: TableRow): boolean {
+    if (hoveredFid == null) return false;
+    return (showSide === "a" ? r.a_fid : r.b_fid) === hoveredFid;
+  }
+
+  function isClusterFeatureHovered(c: Cluster): boolean {
+    if (hoveredFid == null) return false;
+    return c.rows.some((r) => (showSide === "a" ? r.a_fid : r.b_fid) === hoveredFid);
   }
 </script>
 
@@ -165,19 +212,41 @@
           <th>Version B name</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody onmouseover={handleTableMouseover} onmouseleave={handleTableMouseleave}>
         {#each clusters as c (c.cluster_id)}
           {@const span = rowspanForCluster(c)}
+          {@const clusterHover = isClusterFeatureHovered(c)}
+          {@const clusterAnchorA = clusterHover && span === "a"}
+          {@const clusterAnchorB = clusterHover && span === "b"}
+          {@const clusterSelected = selectedClusterId === c.cluster_id}
+          {@const clusterRowHovered = c.rows.some((_, i) => hoveredRowKey === `${c.cluster_id}-${i}`)
+            || (hoveredClusterId === c.cluster_id && hoveredRowKey === null && hoveredFid == null && !clusterSelected)}
           {#each c.rows as r, i (i)}
+            {@const featureHover = isFeatureHovered(r)}
+            {@const anchorA = featureHover}
+            {@const anchorB = featureHover}
             <tr
               class="cw-row"
-              class:cw-row-selected={selectedClusterId === c.cluster_id}
+              class:cw-row-selected={clusterSelected}
+              class:cw-row-hovered={
+                hoveredRowKey === `${c.cluster_id}-${i}` ||
+                featureHover ||
+                (hoveredClusterId === c.cluster_id && hoveredRowKey === null && hoveredFid == null && !clusterSelected)
+              }
               onclick={() => handleRow(c)}
+              data-row-key="{c.cluster_id}-{i}"
               data-cluster-id={c.cluster_id}
+              data-a-fid={r.a_fid ?? ""}
+              data-b-fid={r.b_fid ?? ""}
               data-relationship-class={c.relationship_class}
             >
               {#if i === 0}
-                <td class="cw-class-cell" rowspan={c.rows.length}>
+                <td
+                  class="cw-class-cell"
+                  class:cw-cell-cluster-hovered={clusterHover}
+                  class:cw-class-cell-active={clusterSelected || clusterRowHovered || clusterHover}
+                  rowspan={c.rows.length}
+                >
                   <span class="cw-class-badge" style="background:{REL_COLORS[c.relationship_class]}"
                   >{c.relationship_class}</span>
                 </td>
@@ -186,23 +255,23 @@
               <!-- Previous side: A code & name -->
               {#if span === "a"}
                 {#if i === 0}
-                  <td rowspan={c.rows.length} class="cw-spanned">{r.a_code ?? "—"}</td>
-                  <td rowspan={c.rows.length} class="cw-spanned">{r.a_name ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorA && showSide === "a"} class:cw-cell-anchor-light={clusterAnchorA && showSide !== "a"}>{r.a_code ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorA && showSide === "a"} class:cw-cell-anchor-light={clusterAnchorA && showSide !== "a"}>{r.a_name ?? "—"}</td>
                 {/if}
               {:else}
-                <td>{r.a_code ?? "—"}</td>
-                <td>{r.a_name ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorA && showSide === "a"} class:cw-cell-anchor-light={anchorA && showSide !== "a"}>{r.a_code ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorA && showSide === "a"} class:cw-cell-anchor-light={anchorA && showSide !== "a"}>{r.a_name ?? "—"}</td>
               {/if}
 
               <!-- New side: B code & name -->
               {#if span === "b"}
                 {#if i === 0}
-                  <td rowspan={c.rows.length} class="cw-spanned">{r.b_code ?? "—"}</td>
-                  <td rowspan={c.rows.length} class="cw-spanned">{r.b_name ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorB && showSide === "b"} class:cw-cell-anchor-light={clusterAnchorB && showSide !== "b"}>{r.b_code ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorB && showSide === "b"} class:cw-cell-anchor-light={clusterAnchorB && showSide !== "b"}>{r.b_name ?? "—"}</td>
                 {/if}
               {:else}
-                <td>{r.b_code ?? "—"}</td>
-                <td>{r.b_name ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorB && showSide === "b"} class:cw-cell-anchor-light={anchorB && showSide !== "b"}>{r.b_code ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorB && showSide === "b"} class:cw-cell-anchor-light={anchorB && showSide !== "b"}>{r.b_name ?? "—"}</td>
               {/if}
             </tr>
           {/each}
@@ -299,6 +368,33 @@
   .cw-row-selected:hover {
     background: #e0e7ff !important;
   }
+  .cw-row-hovered {
+    background: #f0f9ff !important;
+  }
+  /* Cells that belong to a cluster whose hovered fid lives in a different
+     <tr> via rowspan. Keeps the class badge + spanned side lit up when the
+     user hovers a sibling row that doesn't contain them. */
+  .cw-cell-cluster-hovered {
+    background: #f0f9ff !important;
+  }
+  /* Anchor the selection/hover bar to the (rowspanned) class cell so it
+     always sits next to the class badge — independent of which specific
+     row in the cluster is selected or hovered. */
+  .cw-class-cell-active {
+    box-shadow: inset 3px 0 0 #6366f1;
+  }
+  /* Anchor cells: hovered row's cells on the version currently shown on the map. */
+  .cw-cell-anchor {
+    background: #c7d2fe !important;
+    font-weight: 600;
+    color: #1e1b4b;
+  }
+  /* Lighter anchor: the same hovered row's cells on the OTHER version, so the
+     correspondence is visible without competing with the active side. */
+  .cw-cell-anchor-light {
+    background: #e0e7ff !important;
+    color: #312e81;
+  }
   .cw-class-cell {
     width: 1%;
     white-space: nowrap;
@@ -314,7 +410,6 @@
     letter-spacing: 0.02em;
   }
   .cw-spanned {
-    background: rgba(99, 102, 241, 0.05);
     border-left: 2px solid #a5b4fc;
     font-weight: 500;
   }

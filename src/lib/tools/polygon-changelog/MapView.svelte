@@ -17,18 +17,24 @@
     outlineBGeojson = null,
     bounds = null,
     selectedClusterId = null,
+    hoveredClusterId = null,
+    hoveredFid = null,
     visibleClasses = null,
     showSide = "b" as "a" | "b",
     onClusterClick,
+    onFeatureHover,
   }: {
     overlayGeojson?: string | null;
     outlineAGeojson?: string | null;
     outlineBGeojson?: string | null;
     bounds?: [number, number, number, number] | null;
     selectedClusterId?: number | null;
+    hoveredClusterId?: number | null;
+    hoveredFid?: number | null;
     visibleClasses?: Set<string> | null;
     showSide?: "a" | "b";
     onClusterClick?: (id: number | null) => void;
+    onFeatureHover?: (payload: { cluster_id: number | null; fid: number | null }) => void;
   } = $props();
 
   let container: HTMLDivElement | undefined;
@@ -75,17 +81,27 @@
   }
 
   function fillOpacityExpr(): ExpressionSpecification {
-    // 0.85 when selected cluster matches OR no cluster is selected;
-    // 0.25 when something is selected and this feature is a different cluster;
-    // 0 when the feature's class is hidden by the filter.
-    if (selectedClusterId == null) {
+    const activeId = selectedClusterId ?? hoveredClusterId;
+    if (activeId == null) {
       return 0.85 as unknown as ExpressionSpecification;
+    }
+    // Per-feature hover: the polygon under the cursor goes fully opaque, its
+    // cluster siblings fade back so the hovered one pops without darkening.
+    if (hoveredFid != null) {
+      return [
+        "case",
+        ["==", ["get", "fid"], hoveredFid],
+        1.0,
+        ["==", ["get", "cluster_id"], activeId],
+        0.55,
+        selectedClusterId != null ? 0.18 : 0.35,
+      ] as unknown as ExpressionSpecification;
     }
     return [
       "case",
-      ["==", ["get", "cluster_id"], selectedClusterId],
+      ["==", ["get", "cluster_id"], activeId],
       0.95,
-      0.2,
+      selectedClusterId != null ? 0.2 : 0.45,
     ] as unknown as ExpressionSpecification;
   }
 
@@ -109,10 +125,11 @@
   $effect(() => {
     // Read reactive deps before any early return so Svelte tracks them.
     const opExpr = fillOpacityExpr();
-    const highlightFilter: FilterSpecification =
-      selectedClusterId == null
+    const effectiveId = selectedClusterId ?? hoveredClusterId;
+const highlightFilter: FilterSpecification =
+      effectiveId == null
         ? (["==", ["get", "cluster_id"], -1] as FilterSpecification)
-        : (["==", ["get", "cluster_id"], selectedClusterId] as FilterSpecification);
+        : (["==", ["get", "cluster_id"], effectiveId] as FilterSpecification);
     if (!map || !styleReady) return;
     for (const layer of ["cw-overlay-fill", "cw-outline-a-fill", "cw-outline-b-fill"]) {
       if (map.getLayer(layer)) map.setPaintProperty(layer, "fill-opacity", opExpr);
@@ -268,11 +285,16 @@
       layout: { visibility: "none" },
       paint: { "line-color": "#111", "line-width": 2.5 },
     });
-    map.on("mousemove", `cw-outline-${side}-fill`, () => {
+    map.on("mousemove", `cw-outline-${side}-fill`, (e) => {
       if (map) map.getCanvas().style.cursor = "pointer";
+      const props = e.features?.[0]?.properties;
+      const cid = props?.cluster_id == null ? null : Number(props.cluster_id);
+      const fid = props?.fid == null ? null : Number(props.fid);
+      onFeatureHover?.({ cluster_id: cid, fid });
     });
     map.on("mouseleave", `cw-outline-${side}-fill`, () => {
       if (map) map.getCanvas().style.cursor = "";
+      onFeatureHover?.({ cluster_id: null, fid: null });
     });
     // Apply current showSide visibility since the effect won't re-fire for newly added layers.
     applySideVisibility(showSide);
@@ -328,11 +350,17 @@
       map?.on("touchstart", stopSpin);
       map?.on("wheel", stopSpin);
       map?.on("click", handleMapClick);
-      map?.on("mousemove", "cw-overlay-fill", () => {
+      map?.on("mousemove", "cw-overlay-fill", (e) => {
         if (map) map.getCanvas().style.cursor = "pointer";
+        const props = e.features?.[0]?.properties;
+        const cid = props?.cluster_id == null ? null : Number(props.cluster_id);
+        const sideFid = showSide === "a" ? props?.a_fid : props?.b_fid;
+        const fid = sideFid == null ? null : Number(sideFid);
+        onFeatureHover?.({ cluster_id: cid, fid });
       });
       map?.on("mouseleave", "cw-overlay-fill", () => {
         if (map) map.getCanvas().style.cursor = "";
+        onFeatureHover?.({ cluster_id: null, fid: null });
       });
     });
   });
