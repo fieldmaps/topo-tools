@@ -550,7 +550,6 @@
         outlineAGeojson={outlineAGeoJSON}
         outlineBGeojson={outlineBGeoJSON}
         {bounds}
-        {selectedClusterId}
         {hoveredClusterId}
         {hoveredFid}
         {visibleClasses}
@@ -567,9 +566,9 @@
         {hoveredFid}
         {showSide}
         {visibleClasses}
-        onRowClick={setSelected}
         onRowHover={setHoveredFromRow}
         onToggleClass={toggleClass}
+        onSetSide={(side) => (showSide = side)}
       />
     </div>
   </div>

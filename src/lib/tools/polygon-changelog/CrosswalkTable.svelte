@@ -8,9 +8,9 @@
     hoveredFid = null,
     showSide = "b" as "a" | "b",
     visibleClasses = null,
-    onRowClick,
     onRowHover,
     onToggleClass,
+    onSetSide,
   }: {
     rows?: TableRow[];
     selectedClusterId?: number | null;
@@ -18,9 +18,9 @@
     hoveredFid?: number | null;
     showSide?: "a" | "b";
     visibleClasses?: Set<RelClass> | null;
-    onRowClick?: (clusterId: number | null) => void;
     onRowHover?: (payload: { cluster_id: number | null; a_fid: number | null; b_fid: number | null } | null) => void;
     onToggleClass?: (c: RelClass) => void;
+    onSetSide?: (side: "a" | "b") => void;
   } = $props();
 
   let search = $state("");
@@ -119,22 +119,19 @@
   }
 
   let scrollContainer: HTMLDivElement | undefined;
-  let fromTableClick = false;
   let hoveredRowKey = $state<string | null>(null);
 
+  // Map click sets selectedClusterId; scroll the matching row into view.
   $effect(() => {
     const id = selectedClusterId;
-    if (fromTableClick) { fromTableClick = false; return; }
     if (id == null || !scrollContainer) return;
     const row = scrollContainer.querySelector<HTMLTableRowElement>(`tr[data-cluster-id="${id}"]`);
     row?.scrollIntoView({ block: "center" });
   });
 
-  function handleRow(c: Cluster): void {
-    if (!onRowClick) return;
-    const newId = c.cluster_id === selectedClusterId ? null : c.cluster_id;
-    fromTableClick = true;
-    onRowClick(newId);
+  // Clicking a Version A/B cell switches the map to that side.
+  function handleSideCell(side: "a" | "b"): void {
+    onSetSide?.(side);
   }
 
   function parseFid(v: string | undefined): number | null {
@@ -218,22 +215,19 @@
           {@const clusterHover = isClusterFeatureHovered(c)}
           {@const clusterAnchorA = clusterHover && span === "a"}
           {@const clusterAnchorB = clusterHover && span === "b"}
-          {@const clusterSelected = selectedClusterId === c.cluster_id}
           {@const clusterRowHovered = c.rows.some((_, i) => hoveredRowKey === `${c.cluster_id}-${i}`)
-            || (hoveredClusterId === c.cluster_id && hoveredRowKey === null && hoveredFid == null && !clusterSelected)}
+            || (hoveredClusterId === c.cluster_id && hoveredRowKey === null && hoveredFid == null)}
           {#each c.rows as r, i (i)}
             {@const featureHover = isFeatureHovered(r)}
             {@const anchorA = featureHover}
             {@const anchorB = featureHover}
             <tr
               class="cw-row"
-              class:cw-row-selected={clusterSelected}
               class:cw-row-hovered={
                 hoveredRowKey === `${c.cluster_id}-${i}` ||
                 featureHover ||
-                (hoveredClusterId === c.cluster_id && hoveredRowKey === null && hoveredFid == null && !clusterSelected)
+                (hoveredClusterId === c.cluster_id && hoveredRowKey === null && hoveredFid == null)
               }
-              onclick={() => handleRow(c)}
               data-row-key="{c.cluster_id}-{i}"
               data-cluster-id={c.cluster_id}
               data-a-fid={r.a_fid ?? ""}
@@ -244,7 +238,7 @@
                 <td
                   class="cw-class-cell"
                   class:cw-cell-cluster-hovered={clusterHover}
-                  class:cw-class-cell-active={clusterSelected || clusterRowHovered || clusterHover}
+                  class:cw-class-cell-active={clusterRowHovered || clusterHover}
                   rowspan={c.rows.length}
                 >
                   <span class="cw-class-badge" style="background:{REL_COLORS[c.relationship_class]}"
@@ -255,23 +249,23 @@
               <!-- Previous side: A code & name -->
               {#if span === "a"}
                 {#if i === 0}
-                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorA && showSide === "a"} class:cw-cell-anchor-light={clusterAnchorA && showSide !== "a"}>{r.a_code ?? "—"}</td>
-                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorA && showSide === "a"} class:cw-cell-anchor-light={clusterAnchorA && showSide !== "a"}>{r.a_name ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorA && showSide === "a"} class:cw-cell-anchor-light={clusterAnchorA && showSide !== "a"} onclick={() => handleSideCell("a")}>{r.a_code ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorA && showSide === "a"} class:cw-cell-anchor-light={clusterAnchorA && showSide !== "a"} onclick={() => handleSideCell("a")}>{r.a_name ?? "—"}</td>
                 {/if}
               {:else}
-                <td class:cw-cell-anchor={anchorA && showSide === "a"} class:cw-cell-anchor-light={anchorA && showSide !== "a"}>{r.a_code ?? "—"}</td>
-                <td class:cw-cell-anchor={anchorA && showSide === "a"} class:cw-cell-anchor-light={anchorA && showSide !== "a"}>{r.a_name ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorA && showSide === "a"} class:cw-cell-anchor-light={anchorA && showSide !== "a"} onclick={() => handleSideCell("a")}>{r.a_code ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorA && showSide === "a"} class:cw-cell-anchor-light={anchorA && showSide !== "a"} onclick={() => handleSideCell("a")}>{r.a_name ?? "—"}</td>
               {/if}
 
               <!-- New side: B code & name -->
               {#if span === "b"}
                 {#if i === 0}
-                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorB && showSide === "b"} class:cw-cell-anchor-light={clusterAnchorB && showSide !== "b"}>{r.b_code ?? "—"}</td>
-                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorB && showSide === "b"} class:cw-cell-anchor-light={clusterAnchorB && showSide !== "b"}>{r.b_name ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorB && showSide === "b"} class:cw-cell-anchor-light={clusterAnchorB && showSide !== "b"} onclick={() => handleSideCell("b")}>{r.b_code ?? "—"}</td>
+                  <td rowspan={c.rows.length} class="cw-spanned" class:cw-cell-cluster-hovered={clusterHover} class:cw-cell-anchor={clusterAnchorB && showSide === "b"} class:cw-cell-anchor-light={clusterAnchorB && showSide !== "b"} onclick={() => handleSideCell("b")}>{r.b_name ?? "—"}</td>
                 {/if}
               {:else}
-                <td class:cw-cell-anchor={anchorB && showSide === "b"} class:cw-cell-anchor-light={anchorB && showSide !== "b"}>{r.b_code ?? "—"}</td>
-                <td class:cw-cell-anchor={anchorB && showSide === "b"} class:cw-cell-anchor-light={anchorB && showSide !== "b"}>{r.b_name ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorB && showSide === "b"} class:cw-cell-anchor-light={anchorB && showSide !== "b"} onclick={() => handleSideCell("b")}>{r.b_code ?? "—"}</td>
+                <td class:cw-cell-anchor={anchorB && showSide === "b"} class:cw-cell-anchor-light={anchorB && showSide !== "b"} onclick={() => handleSideCell("b")}>{r.b_name ?? "—"}</td>
               {/if}
             </tr>
           {/each}
@@ -361,12 +355,6 @@
   }
   .cw-row:hover {
     background: #f9fafb;
-  }
-  .cw-row-selected {
-    background: #eef2ff !important;
-  }
-  .cw-row-selected:hover {
-    background: #e0e7ff !important;
   }
   .cw-row-hovered {
     background: #f0f9ff !important;

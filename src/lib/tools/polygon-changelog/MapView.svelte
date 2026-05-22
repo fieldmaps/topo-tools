@@ -16,7 +16,6 @@
     outlineAGeojson = null,
     outlineBGeojson = null,
     bounds = null,
-    selectedClusterId = null,
     hoveredClusterId = null,
     hoveredFid = null,
     visibleClasses = null,
@@ -28,7 +27,6 @@
     outlineAGeojson?: string | null;
     outlineBGeojson?: string | null;
     bounds?: [number, number, number, number] | null;
-    selectedClusterId?: number | null;
     hoveredClusterId?: number | null;
     hoveredFid?: number | null;
     visibleClasses?: Set<string> | null;
@@ -81,27 +79,26 @@
   }
 
   function fillOpacityExpr(): ExpressionSpecification {
-    const activeId = selectedClusterId ?? hoveredClusterId;
-    if (activeId == null) {
+    if (hoveredClusterId == null) {
       return 0.85 as unknown as ExpressionSpecification;
     }
-    // Per-feature hover: the polygon under the cursor goes fully opaque, its
+    // Per-feature hover: the polygon under the cursor goes nearly opaque, its
     // cluster siblings fade back so the hovered one pops without darkening.
     if (hoveredFid != null) {
       return [
         "case",
         ["==", ["get", "fid"], hoveredFid],
         0.92,
-        ["==", ["get", "cluster_id"], activeId],
+        ["==", ["get", "cluster_id"], hoveredClusterId],
         0.55,
-        selectedClusterId != null ? 0.18 : 0.35,
+        0.35,
       ] as unknown as ExpressionSpecification;
     }
     return [
       "case",
-      ["==", ["get", "cluster_id"], activeId],
+      ["==", ["get", "cluster_id"], hoveredClusterId],
       0.95,
-      selectedClusterId != null ? 0.2 : 0.45,
+      0.45,
     ] as unknown as ExpressionSpecification;
   }
 
@@ -125,11 +122,10 @@
   $effect(() => {
     // Read reactive deps before any early return so Svelte tracks them.
     const opExpr = fillOpacityExpr();
-    const effectiveId = selectedClusterId ?? hoveredClusterId;
-const highlightFilter: FilterSpecification =
-      effectiveId == null
+    const highlightFilter: FilterSpecification =
+      hoveredClusterId == null
         ? (["==", ["get", "cluster_id"], -1] as FilterSpecification)
-        : (["==", ["get", "cluster_id"], effectiveId] as FilterSpecification);
+        : (["==", ["get", "cluster_id"], hoveredClusterId] as FilterSpecification);
     if (!map || !styleReady) return;
     for (const layer of ["cw-overlay-fill", "cw-outline-a-fill", "cw-outline-b-fill"]) {
       if (map.getLayer(layer)) map.setPaintProperty(layer, "fill-opacity", opExpr);
