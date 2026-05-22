@@ -383,18 +383,6 @@
   .cw-class-cell-active {
     box-shadow: inset 3px 0 0 #6366f1;
   }
-  /* Anchor cells: hovered row's cells on the version currently shown on the map. */
-  .cw-cell-anchor {
-    background: #c7d2fe !important;
-    font-weight: 600;
-    color: #1e1b4b;
-  }
-  /* Lighter anchor: the same hovered row's cells on the OTHER version, so the
-     correspondence is visible without competing with the active side. */
-  .cw-cell-anchor-light {
-    background: #e0e7ff !important;
-    color: #312e81;
-  }
   .cw-class-cell {
     width: 1%;
     white-space: nowrap;
@@ -412,6 +400,19 @@
   .cw-spanned {
     border-left: 2px solid #a5b4fc;
     font-weight: 500;
+  }
+  /* Anchor cells: hovered row's cells on the version currently shown on the map.
+     Defined after .cw-spanned so font-weight wins on spanned-anchor cells. */
+  .cw-cell-anchor {
+    background: #c7d2fe !important;
+    font-weight: 600;
+    color: #1e1b4b;
+  }
+  /* Lighter anchor: the same hovered row's cells on the OTHER version, so the
+     correspondence is visible without competing with the active side. */
+  .cw-cell-anchor-light {
+    background: #e0e7ff !important;
+    color: #312e81;
   }
   .cw-empty {
     padding: 1rem;

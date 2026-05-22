@@ -91,7 +91,7 @@
       return [
         "case",
         ["==", ["get", "fid"], hoveredFid],
-        1.0,
+        0.92,
         ["==", ["get", "cluster_id"], activeId],
         0.55,
         selectedClusterId != null ? 0.18 : 0.35,
