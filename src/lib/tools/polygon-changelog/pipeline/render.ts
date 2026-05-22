@@ -102,7 +102,8 @@ export async function buildOutlineGeoJSON(
       SELECT
         ST_AsGeoJSON(k.geom) AS _geom,
         k.fid AS fid,
-        pc.cluster_id AS cluster_id
+        pc.cluster_id AS cluster_id,
+        pc.relationship_class AS relationship_class
       FROM cw_${side}_keyed k
       LEFT JOIN cw_polygon_class pc ON pc.side = '${side}' AND pc.fid = k.fid
       WHERE k.geom IS NOT NULL
@@ -115,6 +116,7 @@ export async function buildOutlineGeoJSON(
     properties: {
       fid: r.fid == null ? null : Number(r.fid),
       cluster_id: r.cluster_id == null ? null : Number(r.cluster_id),
+      relationship_class: r.relationship_class,
       side,
     },
   }));

@@ -8,7 +8,7 @@ export type ExportSource =
   | "clip"
   | "clean"
   | "crosswalk_overlay"
-  | "crosswalk_pairs";
+  | "crosswalk_changelog";
 
 export type ExportKind = "geojson_cached" | "gdal" | "parquet" | "csv";
 
@@ -126,10 +126,10 @@ const SOURCES: Record<ExportSource, SourceConfig> = {
     suffix: "_cw_overlay",
     kind: "spatial",
   },
-  crosswalk_pairs: {
-    table: "cw_pairs_classified",
+  crosswalk_changelog: {
+    table: "cw_changelog",
     attrTable: null,
-    suffix: "_cw_pairs",
+    suffix: "_changelog",
     kind: "tabular",
   },
 };
@@ -166,7 +166,7 @@ export async function listFormats(source?: ExportSource): Promise<ExportFormat[]
 }
 
 function tabularFormats(): ExportFormat[] {
-  // Plain tabular sources (e.g. crosswalk_pairs): no geometry, no GDAL drivers.
+  // Plain tabular sources (e.g. crosswalk_changelog): no geometry, no GDAL drivers.
   // CSV is the primary readable export; Parquet rides the same native COPY path
   // (FORMAT PARQUET) as the spatial Parquet export.
   return [

@@ -34,15 +34,6 @@
     "removed",
   ];
 
-  const REL_COLORS: Record<RelClass, string> = {
-    unchanged: "#9ec5ab",
-    modified: "#e5b250",
-    merge: "#5a8fd8",
-    split: "#e07550",
-    complex: "#b25dab",
-    created: "#6cc46c",
-    removed: "#d35a5a",
-  };
 
   // Input state
   let filesA = $state<File[]>([]);
@@ -61,7 +52,7 @@
   let bNameCol = $state<string | null>(null);
 
   // Thresholds
-  let tauMatch = $state(0.5);
+  let tauMatch = $state(0.67);
   let tauSame = $state(0.98);
 
   // Pipeline run state
@@ -80,18 +71,50 @@
 
   // Selection / filter
   let selectedClusterId = $state<number | null>(null);
+  let hoveredClusterId = $state<number | null>(null);
+  let hoveredFid = $state<number | null>(null);
+  // The currently hovered row's both-side fids. Set by both map hover (via a
+  // tableRows lookup) and table hover. On a side toggle, hoveredFid is
+  // re-derived from this row so the same logical row stays highlighted with
+  // the correct side's fid — no flash, no stale per-side memory.
+  let hoveredRow = $state<{ cluster_id: number; a_fid: number | null; b_fid: number | null } | null>(null);
   let visibleClasses = $state<Set<RelClass>>(new Set(ALL_CLASSES));
+
+  // Comparison mode
+  let showSide = $state<"a" | "b">("b");
+
+  function handleKey(e: KeyboardEvent): void {
+    if (!overlayGeoJSON) return;
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    if (e.key === "]" || e.key === "[") {
+      showSide = showSide === "a" ? "b" : "a";
+    }
+  }
+
+  onMount(() => {
+    initDuckDB();
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  });
 
   // Debounced reclassify on slider changes
   let reclassifyTimer: ReturnType<typeof setTimeout> | undefined;
   let reclassifying = $state(false);
 
-  onMount(() => {
-    initDuckDB();
+
+  // Auto-run when both sides are loaded. Re-dropping a file resets loadedA/B
+  // to false then true again, which re-triggers the run.
+  $effect(() => {
+    const a = loadedA;
+    const b = loadedB;
+    if (!a || !b) return;
+    untrack(() => {
+      if (!running) handleRun();
+    });
   });
 
-  // Auto-load each side when files are dropped. Don't kick off the full
-  // pipeline yet — wait for the user to confirm columns and press Run.
+  // Auto-load each side when files are dropped.
   // Re-dropping after a run reloads: stale dropdowns/results would otherwise
   // linger because loadedA/loadedB stayed true from the prior run.
   $effect(() => {
@@ -135,6 +158,7 @@
     stageLabel = "";
     error = null;
     loadError = null;
+    showSide = "b";
   }
 
   async function loadSideThen(side: "a" | "b"): Promise<void> {
@@ -161,8 +185,6 @@
       loadingSide = null;
     }
   }
-
-  const readyToRun = $derived(loadedA && loadedB && !running);
 
   async function handleRun(): Promise<void> {
     error = null;
@@ -290,20 +312,67 @@
   }
 
   function fileStem(files: File[]): string {
-    if (files.length === 0) return "crosswalk";
+    if (files.length === 0) return "changelog";
     return files[0].name.replace(/\.[^.]+$/, "");
   }
 
   function setSelected(id: number | null): void {
     selectedClusterId = id;
   }
+
+  function setHoveredFromMap(payload: { cluster_id: number | null; fid: number | null }): void {
+    hoveredClusterId = payload.cluster_id;
+    hoveredFid = payload.fid;
+    if (payload.cluster_id == null || payload.fid == null) {
+      hoveredRow = null;
+      return;
+    }
+    // Look up the row whose current-side fid matches the hovered polygon, so
+    // we know the other side's fid for free. A side toggle then re-derives
+    // hoveredFid from this row instead of needing a cursor re-query.
+    let found: { cluster_id: number; a_fid: number | null; b_fid: number | null } | null = null;
+    for (const r of tableRows) {
+      if (r.cluster_id !== payload.cluster_id) continue;
+      const matches = showSide === "a" ? r.a_fid === payload.fid : r.b_fid === payload.fid;
+      if (matches) {
+        found = { cluster_id: r.cluster_id, a_fid: r.a_fid, b_fid: r.b_fid };
+        break;
+      }
+    }
+    hoveredRow = found;
+  }
+
+  function setHoveredFromRow(payload: { cluster_id: number | null; a_fid: number | null; b_fid: number | null } | null): void {
+    if (payload == null || payload.cluster_id == null) {
+      hoveredRow = null;
+      hoveredClusterId = null;
+      hoveredFid = null;
+      return;
+    }
+    hoveredRow = { cluster_id: payload.cluster_id, a_fid: payload.a_fid, b_fid: payload.b_fid };
+    hoveredClusterId = payload.cluster_id;
+    hoveredFid = showSide === "a" ? payload.a_fid : payload.b_fid;
+  }
+
+  // Re-derive hoveredFid from the hovered row when the side toggles, so the
+  // same row stays highlighted with the correct side's fid. Works for both
+  // table-row hover and map hover (which populates hoveredRow via a tableRows
+  // lookup), so toggles never flash through a stale per-side memory.
+  $effect(() => {
+    const side = showSide;
+    const row = hoveredRow;
+    if (row == null) return;
+    untrack(() => {
+      hoveredFid = side === "a" ? row.a_fid : row.b_fid;
+    });
+  });
 </script>
 
 <div class="cw-layout">
   <aside class="cw-sidebar">
     <header>
       <a class="cw-back" href="/">← Topology Tools</a>
-      <h1>Boundary Cross-walk</h1>
+      <h1>Changelog</h1>
       <p class="cw-blurb">
         Compare two versions of a polygon layer (e.g. ADM2 across census rounds) and classify each
         unit as unchanged, modified, merged, split, created, or removed. Drop both versions; the
@@ -319,10 +388,10 @@
     {/if}
 
     <section class="cw-step">
-      <h2 class="cw-step-heading">Step 1 — Drop both layers</h2>
+      <h2 class="cw-step-heading">Drop both layers</h2>
       <div class="cw-dropzones">
         <div data-testid="dropzone-a">
-          <label class="cw-zone-label">Previous</label>
+          <label class="cw-zone-label">Version A</label>
           <DropZone
             bind:files={filesA}
             disabled={running || loadingSide === "a"}
@@ -330,7 +399,7 @@
           />
         </div>
         <div data-testid="dropzone-b">
-          <label class="cw-zone-label">New</label>
+          <label class="cw-zone-label">Version B</label>
           <DropZone
             bind:files={filesB}
             disabled={running || loadingSide === "b"}
@@ -338,18 +407,18 @@
           />
         </div>
       </div>
-      {#if loadingSide === "a"}<p class="cw-status">Loading Previous…</p>{/if}
-      {#if loadingSide === "b"}<p class="cw-status">Loading New…</p>{/if}
+      {#if loadingSide === "a"}<p class="cw-status">Loading Version A…</p>{/if}
+      {#if loadingSide === "b"}<p class="cw-status">Loading Version B…</p>{/if}
       {#if loadError}<div class="cw-error">{loadError}</div>{/if}
     </section>
 
     {#if loadedA || loadedB}
       <section class="cw-step">
-        <h2 class="cw-step-heading">Step 2 — Pick code &amp; name columns</h2>
+        <h2 class="cw-step-heading">Pick code &amp; name columns</h2>
         <div class="cw-cols">
           {#if colsA}
             <fieldset class="cw-fieldset">
-              <legend>Previous</legend>
+              <legend>Version A</legend>
               <label class="cw-field">
                 <span>Code</span>
                 <select bind:value={aCodeCol} disabled={running}>
@@ -368,7 +437,7 @@
           {/if}
           {#if colsB}
             <fieldset class="cw-fieldset">
-              <legend>New</legend>
+              <legend>Version B</legend>
               <label class="cw-field">
                 <span>Code</span>
                 <select bind:value={bCodeCol} disabled={running}>
@@ -390,9 +459,9 @@
     {/if}
 
     <section class="cw-step">
-      <h2 class="cw-step-heading">Step 3 — Thresholds</h2>
+      <h2 class="cw-step-heading">Thresholds</h2>
       <label class="cw-slider">
-        <span>τ_match = {tauMatch.toFixed(2)}</span>
+        <span>Match overlap — {Math.round(tauMatch * 100)}%</span>
         <input
           type="range"
           min="0"
@@ -403,34 +472,29 @@
           disabled={running}
         />
         <p class="cw-hint">
-          Minimum coverage (in either direction) for a pair to count as related. Lower = more matches.
-        </p>
-      </label>
-      <label class="cw-slider">
-        <span>τ_same = {tauSame.toFixed(2)}</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          bind:value={tauSame}
-          oninput={scheduleReclassify}
-          disabled={running}
-        />
-        <p class="cw-hint">
-          IoU above which a 1:1 cluster is treated as <em>unchanged</em> rather than <em>modified</em>.
+          How much of either polygon must overlap the other for the two to be considered related. Lower = more matches.
         </p>
       </label>
 
-      <button
-        class="cw-run"
-        type="button"
-        onclick={handleRun}
-        disabled={!readyToRun}
-        data-testid="run-button"
-      >
-        {running ? "Running…" : reclassifying ? "Reclassifying…" : "Run"}
-      </button>
+      <details class="cw-advanced">
+        <summary>Advanced</summary>
+        <label class="cw-slider">
+          <span>Unchanged overlap — {Math.round(tauSame * 100)}%</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={tauSame}
+            oninput={scheduleReclassify}
+            disabled={running}
+          />
+          <p class="cw-hint">
+            How much a 1:1 matched pair must overlap to be classified as <em>unchanged</em> rather than <em>modified</em>.
+          </p>
+        </label>
+      </details>
+
     </section>
 
     {#if currentStage > 0 || errorStage > 0}
@@ -458,35 +522,10 @@
         <h2 class="cw-step-heading">Download</h2>
         <div class="cw-downloads">
           <DownloadMenu
-            primaryLabel="Overlay GeoJSON"
+            primaryLabel="Changelog CSV"
             filenameStem={fileStem(filesA)}
-            cachedGeoJSON={overlayGeoJSON}
-            exportSource="crosswalk_overlay"
+            exportSource="crosswalk_changelog"
           />
-          <DownloadMenu
-            primaryLabel="Cross-walk CSV"
-            filenameStem={fileStem(filesA)}
-            exportSource="crosswalk_pairs"
-          />
-        </div>
-      </section>
-    {/if}
-
-    {#if overlayGeoJSON}
-      <section class="cw-step">
-        <h2 class="cw-step-heading">Filter by class</h2>
-        <div class="cw-class-filters">
-          {#each ALL_CLASSES as c (c)}
-            <label class="cw-class-toggle">
-              <input
-                type="checkbox"
-                checked={visibleClasses.has(c)}
-                onchange={() => toggleClass(c)}
-              />
-              <span class="cw-swatch" style="background:{REL_COLORS[c]}"></span>
-              <span class="cw-class-name">{c}</span>
-            </label>
-          {/each}
         </div>
       </section>
     {/if}
@@ -496,22 +535,40 @@
 
   <div class="cw-result">
     <div class="cw-map-pane">
+      {#if overlayGeoJSON}
+        <div class="cw-view-toolbar">
+          <div class="cw-mode-btns" role="group" aria-label="View mode">
+            <button class="cw-mode-btn" class:active={showSide === "a"} onclick={() => showSide = "a"}>Version A</button>
+            <button class="cw-mode-btn" class:active={showSide === "b"} onclick={() => showSide = "b"}>Version B</button>
+          </div>
+          <p class="cw-kbd-hint"><kbd>[</kbd><kbd>]</kbd> to cycle</p>
+        </div>
+      {/if}
+
       <MapView
         overlayGeojson={overlayGeoJSON}
         outlineAGeojson={outlineAGeoJSON}
         outlineBGeojson={outlineBGeoJSON}
         {bounds}
-        {selectedClusterId}
+        {hoveredClusterId}
+        {hoveredFid}
         {visibleClasses}
         onClusterClick={setSelected}
+        onFeatureHover={setHoveredFromMap}
+        {showSide}
       />
     </div>
     <div class="cw-table-pane">
       <CrosswalkTable
         rows={tableRows}
         {selectedClusterId}
+        {hoveredClusterId}
+        {hoveredFid}
+        {showSide}
         {visibleClasses}
-        onRowClick={setSelected}
+        onRowHover={setHoveredFromRow}
+        onToggleClass={toggleClass}
+        onSetSide={(side) => (showSide = side)}
       />
     </div>
   </div>
@@ -627,23 +684,20 @@
     margin: 0;
     line-height: 1.3;
   }
-  .cw-run {
+  .cw-advanced {
     margin-top: 0.5rem;
-    padding: 0.55rem 0.8rem;
-    background: #1d4ed8;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    font-size: 0.9rem;
-    font-weight: 600;
+  }
+  .cw-advanced summary {
+    font-size: 0.8rem;
+    color: #6b7280;
     cursor: pointer;
+    user-select: none;
   }
-  .cw-run:hover:not(:disabled) {
-    background: #1e40af;
+  .cw-advanced summary:hover {
+    color: #374151;
   }
-  .cw-run:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .cw-advanced > .cw-slider {
+    margin-top: 0.5rem;
   }
   .cw-status {
     font-size: 0.85rem;
@@ -708,26 +762,6 @@
     flex-direction: column;
     gap: 0.5rem;
   }
-  .cw-class-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-  }
-  .cw-class-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: 0.75rem;
-    cursor: pointer;
-    text-transform: capitalize;
-  }
-  .cw-swatch {
-    display: inline-block;
-    width: 11px;
-    height: 11px;
-    border-radius: 2px;
-    border: 1px solid rgba(0, 0, 0, 0.1);
-  }
   .cw-privacy {
     margin: 0;
     padding-top: 0.5rem;
@@ -736,21 +770,92 @@
   }
   .cw-result {
     display: grid;
-    grid-template-rows: 60% 40%;
+    grid-template-rows: 65% 35%;
     height: 100dvh;
     min-width: 0;
   }
   .cw-map-pane {
     min-height: 0;
     border-bottom: 1px solid #e5e7eb;
+    position: relative;
   }
+
+  .cw-view-toolbar {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+    pointer-events: auto;
+  }
+
+  .cw-mode-btns {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+
+  .cw-mode-btn {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border: none;
+    background: #fff;
+    color: #6b7280;
+    cursor: pointer;
+    border-left: 1px solid #e5e7eb;
+    transition: background 0.1s, color 0.1s;
+  }
+
+  .cw-mode-btn:first-child {
+    border-left: none;
+  }
+
+  .cw-kbd-hint {
+    margin: 0;
+    font-size: 0.7rem;
+    color: #6b7280;
+    text-align: right;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 0.2rem 0.45rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+
+  .cw-kbd-hint kbd {
+    font-family: inherit;
+    font-size: 0.7rem;
+    padding: 0.05rem 0.2rem;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    background: #f3f4f6;
+    color: #4b5563;
+  }
+
+  .cw-mode-btn:hover {
+    background: #f3f4f6;
+    color: #111;
+  }
+
+  .cw-mode-btn.active {
+    background: #111;
+    color: #fff;
+  }
+
   .cw-table-pane {
     min-height: 0;
   }
   @media (min-width: 1280px) {
     .cw-result {
       grid-template-rows: 1fr;
-      grid-template-columns: 60% 40%;
+      grid-template-columns: 65% 35%;
     }
     .cw-map-pane {
       border-right: 1px solid #e5e7eb;

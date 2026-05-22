@@ -123,9 +123,9 @@ export async function runPipeline(
 ): Promise<PipelineResult> {
   try {
     await dropPriorRun(conn);
-    onProgress(1, "Loading Previous");
+    onProgress(1, "Loading Version A");
     await loadSide(db, conn, "a", filesA);
-    onProgress(1, "Loading New");
+    onProgress(1, "Loading Version B");
     await loadSide(db, conn, "b", filesB);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

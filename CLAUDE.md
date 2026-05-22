@@ -7,6 +7,10 @@
 - If you lack verified information, acknowledge uncertainty and investigate
   first rather than speculate
 
+## Code Reuse
+
+When adding a feature that requires logic that already exists elsewhere in the codebase, extract it into a shared module — don't copy it. Duplication is not a "minimal change"; it creates two places to maintain identical behaviour. The rule against premature abstraction applies to inventing new layers of indirection for hypothetical future needs, not to consolidating code that is already proven and used in multiple places.
+
 ## Collaboration Style
 
 - Be objective, not agreeable — act as a partner, not a sycophant

@@ -15,16 +15,16 @@ import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 export async function stageAreas(conn: AsyncDuckDBConnection): Promise<void> {
   await conn.query(`--sql
     CREATE OR REPLACE TABLE cw_a_areas AS
-    SELECT fid, ST_Area(geom) AS area FROM cw_a_keyed
+    SELECT fid, ST_Area(ST_Transform(geom, 'EPSG:4326', 'EPSG:8857')) AS area FROM cw_a_keyed
   `);
   await conn.query(`--sql
     CREATE OR REPLACE TABLE cw_b_areas AS
-    SELECT fid, ST_Area(geom) AS area FROM cw_b_keyed
+    SELECT fid, ST_Area(ST_Transform(geom, 'EPSG:4326', 'EPSG:8857')) AS area FROM cw_b_keyed
   `);
 
   await conn.query(`--sql
     CREATE OR REPLACE TABLE cw_pair_areas AS
-    SELECT a_fid, b_fid, SUM(ST_Area(geom)) AS shared_area
+    SELECT a_fid, b_fid, SUM(ST_Area(ST_Transform(geom, 'EPSG:4326', 'EPSG:8857'))) AS shared_area
     FROM cw_overlap
     GROUP BY a_fid, b_fid
   `);
