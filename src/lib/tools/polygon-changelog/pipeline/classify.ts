@@ -234,14 +234,21 @@ async function writeBack(
   await conn.query("DROP TABLE IF EXISTS cw_changelog");
   await conn.query(`--sql
     CREATE TABLE cw_changelog AS
-    SELECT ak.code AS code_a, bk.code AS code_b, p.relationship_class
+    SELECT
+      ak.code AS code_a,
+      bk.code AS code_b,
+      p.relationship_class,
+      p.coverage_a AS a_in_b,
+      p.coverage_b AS b_in_a,
+      p.iou AS similarity
     FROM cw_pairs_classified p
     LEFT JOIN cw_a_keyed ak ON ak.fid = p.a_fid
     LEFT JOIN cw_b_keyed bk ON bk.fid = p.b_fid
 
     UNION ALL
 
-    SELECT ak.code AS code_a, NULL AS code_b, pc.relationship_class
+    SELECT ak.code AS code_a, NULL AS code_b, pc.relationship_class,
+           NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity
     FROM cw_polygon_class pc
     JOIN (
       SELECT cluster_id, SUM(CASE WHEN side='b' THEN 1 ELSE 0 END) AS nb
@@ -252,7 +259,8 @@ async function writeBack(
 
     UNION ALL
 
-    SELECT NULL AS code_a, bk.code AS code_b, pc.relationship_class
+    SELECT NULL AS code_a, bk.code AS code_b, pc.relationship_class,
+           NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity
     FROM cw_polygon_class pc
     JOIN (
       SELECT cluster_id, SUM(CASE WHEN side='a' THEN 1 ELSE 0 END) AS na

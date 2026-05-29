@@ -121,6 +121,33 @@
   let scrollContainer: HTMLDivElement | undefined;
   let hoveredRowKey = $state<string | null>(null);
 
+  interface TooltipState {
+    x: number;
+    y: number;
+    cov_a: number | null;
+    cov_b: number | null;
+    iou: number | null;
+    relClass: RelClass | null;
+  }
+  let tooltip = $state<TooltipState | null>(null);
+
+  function handleMouseMove(e: MouseEvent): void {
+    const tr = (e.target as Element).closest("tr[data-row-key]") as HTMLElement | null;
+    if (!tr) {
+      tooltip = null;
+      return;
+    }
+    const covA = tr.dataset.covA ? Number(tr.dataset.covA) : null;
+    const covB = tr.dataset.covB ? Number(tr.dataset.covB) : null;
+    const iouV = tr.dataset.iou ? Number(tr.dataset.iou) : null;
+    const relClass = (tr.dataset.relationshipClass as RelClass) ?? null;
+    if (covA == null && covB == null) {
+      tooltip = null;
+      return;
+    }
+    tooltip = { x: e.clientX, y: e.clientY, cov_a: covA, cov_b: covB, iou: iouV, relClass };
+  }
+
   // Map click sets selectedClusterId; scroll the matching row into view.
   $effect(() => {
     const id = selectedClusterId;
@@ -160,6 +187,7 @@
     if (hoveredRowKey === null) return;
     hoveredRowKey = null;
     onRowHover?.(null);
+    tooltip = null;
   }
 
   function isFeatureHovered(r: TableRow): boolean {
@@ -198,7 +226,7 @@
     {/if}
   </div>
 
-  <div class="cw-table-scroll" bind:this={scrollContainer}>
+  <div class="cw-table-scroll" bind:this={scrollContainer} onmousemove={handleMouseMove}>
     <table>
       <thead>
         <tr>
@@ -233,6 +261,9 @@
               data-a-fid={r.a_fid ?? ""}
               data-b-fid={r.b_fid ?? ""}
               data-relationship-class={c.relationship_class}
+              data-cov-a={r.coverage_a ?? ""}
+              data-cov-b={r.coverage_b ?? ""}
+              data-iou={r.iou ?? ""}
             >
               {#if i === 0}
                 <td
@@ -277,6 +308,22 @@
       <p class="cw-empty">No rows match the current filter.</p>
     {/if}
   </div>
+
+  {#if tooltip && (tooltip.cov_a != null || tooltip.cov_b != null)}
+    <div class="cw-tooltip" style="left:{tooltip.x + 14}px;top:{tooltip.y + 8}px">
+      <div class="cw-tooltip-grid">
+        {#if tooltip.cov_a != null}
+          <span class="cw-tooltip-pct">{Math.round(tooltip.cov_a * 100)}%</span><span>A in B</span>
+        {/if}
+        {#if tooltip.cov_b != null}
+          <span class="cw-tooltip-pct">{Math.round(tooltip.cov_b * 100)}%</span><span>B in A</span>
+        {/if}
+        {#if (tooltip.relClass === "unchanged" || tooltip.relClass === "modified") && tooltip.iou != null}
+          <span class="cw-tooltip-pct">{Math.round(tooltip.iou * 100)}%</span><span>Similarity</span>
+        {/if}
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -407,5 +454,25 @@
     text-align: center;
     color: #6b7280;
     font-size: 0.875rem;
+  }
+  .cw-tooltip {
+    position: fixed;
+    background: #1f2937;
+    color: #f9fafb;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    padding: 0.25rem 0.55rem;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 100;
+    white-space: nowrap;
+  }
+  .cw-tooltip-grid {
+    display: grid;
+    grid-template-columns: max-content max-content;
+    column-gap: 0.4rem;
+  }
+  .cw-tooltip-pct {
+    text-align: right;
   }
 </style>

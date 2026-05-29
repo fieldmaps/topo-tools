@@ -1,12 +1,10 @@
 <script lang="ts">
-  import { duckdbState, initDuckDB } from "$lib/db/duckdb.svelte";
   import DownloadMenu from "$lib/components/DownloadMenu.svelte";
   import DropZone from "$lib/components/DropZone.svelte";
+  import { duckdbState, initDuckDB } from "$lib/db/duckdb.svelte";
   import { onMount, untrack } from "svelte";
-  import MapView from "./MapView.svelte";
   import CrosswalkTable from "./CrosswalkTable.svelte";
-  import { dropPriorRun, loadSide } from "./pipeline/load";
-  import { detectColumns, type ColumnGuess } from "./pipeline/columns";
+  import MapView from "./MapView.svelte";
   import {
     PipelineError,
     reclassifyOnly,
@@ -14,6 +12,8 @@
     type RelClass,
     type TableRow,
   } from "./pipeline";
+  import { detectColumns, type ColumnGuess } from "./pipeline/columns";
+  import { loadSide } from "./pipeline/load";
 
   const STAGE_LABELS = [
     "Load sources",
@@ -33,7 +33,6 @@
     "created",
     "removed",
   ];
-
 
   // Input state
   let filesA = $state<File[]>([]);
@@ -77,7 +76,11 @@
   // tableRows lookup) and table hover. On a side toggle, hoveredFid is
   // re-derived from this row so the same logical row stays highlighted with
   // the correct side's fid — no flash, no stale per-side memory.
-  let hoveredRow = $state<{ cluster_id: number; a_fid: number | null; b_fid: number | null } | null>(null);
+  let hoveredRow = $state<{
+    cluster_id: number;
+    a_fid: number | null;
+    b_fid: number | null;
+  } | null>(null);
   let visibleClasses = $state<Set<RelClass>>(new Set(ALL_CLASSES));
 
   // Comparison mode
@@ -101,7 +104,6 @@
   // Debounced reclassify on slider changes
   let reclassifyTimer: ReturnType<typeof setTimeout> | undefined;
   let reclassifying = $state(false);
-
 
   // Auto-run when both sides are loaded. Re-dropping a file resets loadedA/B
   // to false then true again, which re-triggers the run.
@@ -342,7 +344,9 @@
     hoveredRow = found;
   }
 
-  function setHoveredFromRow(payload: { cluster_id: number | null; a_fid: number | null; b_fid: number | null } | null): void {
+  function setHoveredFromRow(
+    payload: { cluster_id: number | null; a_fid: number | null; b_fid: number | null } | null,
+  ): void {
     if (payload == null || payload.cluster_id == null) {
       hoveredRow = null;
       hoveredClusterId = null;
@@ -461,7 +465,7 @@
     <section class="cw-step">
       <h2 class="cw-step-heading">Thresholds</h2>
       <label class="cw-slider">
-        <span>Match overlap — {Math.round(tauMatch * 100)}%</span>
+        <span>Match — {Math.round(tauMatch * 100)}%</span>
         <input
           type="range"
           min="0"
@@ -472,14 +476,15 @@
           disabled={running}
         />
         <p class="cw-hint">
-          How much of either polygon must overlap the other for the two to be considered related. Lower = more matches.
+          How much of either polygon must overlap the other for the two to be considered related.
+          Lower = more matches.
         </p>
       </label>
 
       <details class="cw-advanced">
         <summary>Advanced</summary>
         <label class="cw-slider">
-          <span>Unchanged overlap — {Math.round(tauSame * 100)}%</span>
+          <span>Unchanged — {Math.round(tauSame * 100)}%</span>
           <input
             type="range"
             min="0"
@@ -490,11 +495,11 @@
             disabled={running}
           />
           <p class="cw-hint">
-            How much a 1:1 matched pair must overlap to be classified as <em>unchanged</em> rather than <em>modified</em>.
+            How much a 1:1 matched pair must overlap to be classified as <em>unchanged</em> rather
+            than <em>modified</em>.
           </p>
         </label>
       </details>
-
     </section>
 
     {#if currentStage > 0 || errorStage > 0}
@@ -538,8 +543,16 @@
       {#if overlayGeoJSON}
         <div class="cw-view-toolbar">
           <div class="cw-mode-btns" role="group" aria-label="View mode">
-            <button class="cw-mode-btn" class:active={showSide === "a"} onclick={() => showSide = "a"}>Version A</button>
-            <button class="cw-mode-btn" class:active={showSide === "b"} onclick={() => showSide = "b"}>Version B</button>
+            <button
+              class="cw-mode-btn"
+              class:active={showSide === "a"}
+              onclick={() => (showSide = "a")}>Version A</button
+            >
+            <button
+              class="cw-mode-btn"
+              class:active={showSide === "b"}
+              onclick={() => (showSide = "b")}>Version B</button
+            >
           </div>
           <p class="cw-kbd-hint"><kbd>[</kbd><kbd>]</kbd> to cycle</p>
         </div>
@@ -798,7 +811,7 @@
     border-radius: 6px;
     overflow: hidden;
     background: #fff;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   }
 
   .cw-mode-btn {
@@ -810,7 +823,9 @@
     color: #6b7280;
     cursor: pointer;
     border-left: 1px solid #e5e7eb;
-    transition: background 0.1s, color 0.1s;
+    transition:
+      background 0.1s,
+      color 0.1s;
   }
 
   .cw-mode-btn:first-child {
@@ -826,7 +841,7 @@
     border: 1px solid #d1d5db;
     border-radius: 6px;
     padding: 0.2rem 0.45rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   }
 
   .cw-kbd-hint kbd {
