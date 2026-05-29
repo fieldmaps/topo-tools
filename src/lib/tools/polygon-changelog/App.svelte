@@ -51,7 +51,7 @@
   let bNameCol = $state<string | null>(null);
 
   // Thresholds
-  let tauMatch = $state(0.67);
+  let tauMatch = $state(0.8);
   let tauSame = $state(0.98);
 
   // Pipeline run state
@@ -104,6 +104,7 @@
   // Debounced reclassify on slider changes
   let reclassifyTimer: ReturnType<typeof setTimeout> | undefined;
   let reclassifying = $state(false);
+  let reclassifyPending = false;
 
   // Auto-run when both sides are loaded. Re-dropping a file resets loadedA/B
   // to false then true again, which re-triggers the run.
@@ -161,6 +162,11 @@
     error = null;
     loadError = null;
     showSide = "b";
+    reclassifyPending = false;
+    if (reclassifyTimer) {
+      clearTimeout(reclassifyTimer);
+      reclassifyTimer = undefined;
+    }
   }
 
   async function loadSideThen(side: "a" | "b"): Promise<void> {
@@ -235,28 +241,39 @@
   function scheduleReclassify(): void {
     if (overlayGeoJSON == null) return;
     if (reclassifyTimer) clearTimeout(reclassifyTimer);
-    reclassifyTimer = setTimeout(async () => {
-      reclassifying = true;
-      try {
-        const result = await reclassifyOnly(duckdbState.conn!, {
-          tauMatch,
-          tauSame,
-          aCodeCol,
-          aNameCol,
-          bCodeCol,
-          bNameCol,
-        });
-        overlayGeoJSON = result.overlayGeoJSON;
-        outlineAGeoJSON = result.outlineAGeoJSON;
-        outlineBGeoJSON = result.outlineBGeoJSON;
-        tableRows = result.tableRows;
-        exposeDebugHook();
-      } catch (e) {
-        error = e instanceof Error ? e.message : String(e);
-      } finally {
-        reclassifying = false;
+    if (reclassifying) {
+      reclassifyPending = true;
+      return;
+    }
+    reclassifyTimer = setTimeout(doReclassify, 100);
+  }
+
+  async function doReclassify(): Promise<void> {
+    reclassifying = true;
+    reclassifyPending = false;
+    try {
+      const result = await reclassifyOnly(duckdbState.conn!, {
+        tauMatch,
+        tauSame,
+        aCodeCol,
+        aNameCol,
+        bCodeCol,
+        bNameCol,
+      });
+      overlayGeoJSON = result.overlayGeoJSON;
+      outlineAGeoJSON = result.outlineAGeoJSON;
+      outlineBGeoJSON = result.outlineBGeoJSON;
+      tableRows = result.tableRows;
+      exposeDebugHook();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      reclassifying = false;
+      if (reclassifyPending) {
+        reclassifyPending = false;
+        setTimeout(doReclassify, 0);
       }
-    }, 100);
+    }
   }
 
   function exposeDebugHook(): void {
