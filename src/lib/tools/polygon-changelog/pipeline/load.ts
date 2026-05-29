@@ -23,11 +23,16 @@ const QIDENT = (s: string) => '"' + s.replace(/"/g, '""') + '"';
 export async function buildKeyed(
   conn: AsyncDuckDBConnection,
   side: "a" | "b",
-  codeCol: string | null,
+  codeCols: string[],
   nameCol: string | null,
 ): Promise<void> {
   const prefix = `cw_${side}_`;
-  const codeExpr = codeCol ? `CAST(a.${QIDENT(codeCol)} AS VARCHAR)` : "NULL::VARCHAR";
+  const codeExpr =
+    codeCols.length === 0
+      ? "NULL::VARCHAR"
+      : codeCols.length === 1
+        ? `CAST(a.${QIDENT(codeCols[0])} AS VARCHAR)`
+        : `CONCAT(${codeCols.map((c) => `CAST(a.${QIDENT(c)} AS VARCHAR)`).join(", ")})`;
   const nameExpr = nameCol ? `CAST(a.${QIDENT(nameCol)} AS VARCHAR)` : "NULL::VARCHAR";
   await conn.query(`--sql
     CREATE OR REPLACE TABLE cw_${side}_keyed AS

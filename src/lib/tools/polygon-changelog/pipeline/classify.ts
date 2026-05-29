@@ -155,6 +155,7 @@ export async function stageClassify(
   }
 
   await writeBack(conn, pairsOut, singletonsOut, clusterMembers, clusterClass);
+  await rebuildChangelog(conn, tauMatch, tauSame);
   return { pairs: pairsOut, singletons: singletonsOut };
 }
 
@@ -230,7 +231,13 @@ async function writeBack(
   // Stage 6 (table.ts) reconstructs the singleton rows for the table from
   // cw_polygon_class with NULL on the other side.
   void singletons;
+}
 
+export async function rebuildChangelog(
+  conn: AsyncDuckDBConnection,
+  tauMatch: number,
+  tauSame: number,
+): Promise<void> {
   await conn.query("DROP TABLE IF EXISTS cw_changelog");
   await conn.query(`--sql
     CREATE TABLE cw_changelog AS
@@ -238,9 +245,11 @@ async function writeBack(
       ak.code AS code_a,
       bk.code AS code_b,
       p.relationship_class,
-      p.coverage_a AS a_in_b,
-      p.coverage_b AS b_in_a,
-      p.iou AS similarity
+      ROUND(p.coverage_a, 3) AS a_in_b,
+      ROUND(p.coverage_b, 3) AS b_in_a,
+      ROUND(p.iou, 3) AS similarity,
+      ${tauMatch} AS threshold_match,
+      ${tauSame} AS threshold_unchanged
     FROM cw_pairs_classified p
     LEFT JOIN cw_a_keyed ak ON ak.fid = p.a_fid
     LEFT JOIN cw_b_keyed bk ON bk.fid = p.b_fid
@@ -248,7 +257,8 @@ async function writeBack(
     UNION ALL
 
     SELECT ak.code AS code_a, NULL AS code_b, pc.relationship_class,
-           NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity
+           NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity,
+           ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged
     FROM cw_polygon_class pc
     JOIN (
       SELECT cluster_id, SUM(CASE WHEN side='b' THEN 1 ELSE 0 END) AS nb
@@ -260,7 +270,8 @@ async function writeBack(
     UNION ALL
 
     SELECT NULL AS code_a, bk.code AS code_b, pc.relationship_class,
-           NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity
+           NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity,
+           ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged
     FROM cw_polygon_class pc
     JOIN (
       SELECT cluster_id, SUM(CASE WHEN side='a' THEN 1 ELSE 0 END) AS na

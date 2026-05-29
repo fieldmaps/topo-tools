@@ -12,8 +12,10 @@
     type RelClass,
     type TableRow,
   } from "./pipeline";
+  import { rebuildChangelog } from "./pipeline/classify";
   import { detectColumns, type ColumnGuess } from "./pipeline/columns";
-  import { loadSide } from "./pipeline/load";
+  import { buildKeyed, loadSide } from "./pipeline/load";
+  import { stageTable } from "./pipeline/table";
 
   const STAGE_LABELS = [
     "Load sources",
@@ -45,10 +47,12 @@
   // Auto-detected columns + user selections
   let colsA = $state<ColumnGuess | null>(null);
   let colsB = $state<ColumnGuess | null>(null);
-  let aCodeCol = $state<string | null>(null);
+  let aCodeSlots = $state<(string | null)[]>([null]);
   let aNameCol = $state<string | null>(null);
-  let bCodeCol = $state<string | null>(null);
+  let bCodeSlots = $state<(string | null)[]>([null]);
   let bNameCol = $state<string | null>(null);
+  const aCodeCol = $derived(aCodeSlots.filter((s): s is string => s !== null));
+  const bCodeCol = $derived(bCodeSlots.filter((s): s is string => s !== null));
 
   // Thresholds
   let tauMatch = $state(0.8);
@@ -127,7 +131,7 @@
     untrack(() => {
       if (loadingSide === "a") return;
       colsA = null;
-      aCodeCol = null;
+      aCodeSlots = [null];
       aNameCol = null;
       loadedA = false;
       resetResults();
@@ -141,7 +145,7 @@
     untrack(() => {
       if (loadingSide === "b") return;
       colsB = null;
-      bCodeCol = null;
+      bCodeSlots = [null];
       bNameCol = null;
       loadedB = false;
       resetResults();
@@ -178,12 +182,12 @@
       const cols = await detectColumns(duckdbState.conn!, `cw_${side}_layer_attr`);
       if (side === "a") {
         colsA = cols;
-        aCodeCol = cols.code;
+        aCodeSlots = [cols.code ?? null];
         aNameCol = cols.name;
         loadedA = true;
       } else {
         colsB = cols;
-        bCodeCol = cols.code;
+        bCodeSlots = [cols.code ?? null];
         bNameCol = cols.name;
         loadedB = true;
       }
@@ -233,6 +237,32 @@
       error = e instanceof Error ? e.message : String(e);
       errorStage = e instanceof PipelineError ? (e as PipelineError).failedStage : currentStage;
       currentStage = 0;
+    } finally {
+      running = false;
+    }
+  }
+
+  $effect(() => {
+    const _a = aCodeSlots;
+    const _b = bCodeSlots;
+    const _an = aNameCol;
+    const _bn = bNameCol;
+    untrack(() => {
+      if (!overlayGeoJSON || running) return;
+      handleApplyColumns();
+    });
+  });
+
+  async function handleApplyColumns(): Promise<void> {
+    if (!duckdbState.conn || !overlayGeoJSON) return;
+    running = true;
+    try {
+      await buildKeyed(duckdbState.conn, "a", aCodeCol, aNameCol);
+      await buildKeyed(duckdbState.conn, "b", bCodeCol, bNameCol);
+      await rebuildChangelog(duckdbState.conn, tauMatch, tauSame);
+      tableRows = await stageTable(duckdbState.conn);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       running = false;
     }
@@ -330,9 +360,13 @@
     visibleClasses = next;
   }
 
-  function fileStem(files: File[]): string {
-    if (files.length === 0) return "changelog";
-    return files[0].name.replace(/\.[^.]+$/, "");
+  function fileStem(a: File[], b: File[]): string {
+    const stem = (files: File[]) => files[0]?.name.replace(/\.[^.]+$/, "") ?? "";
+    const sa = stem(a);
+    const sb = stem(b);
+    if (!sa && !sb) return "changelog";
+    if (!sa || !sb || sa === sb) return sa || sb;
+    return `${sa}_${sb}`;
   }
 
   function setSelected(id: number | null): void {
@@ -440,12 +474,41 @@
           {#if colsA}
             <fieldset class="cw-fieldset">
               <legend>Version A</legend>
-              <label class="cw-field">
+              <label class="cw-field cw-field--code">
                 <span>Code</span>
-                <select bind:value={aCodeCol} disabled={running}>
-                  <option value={null}>(none)</option>
-                  {#each colsA.all as col (col)}<option value={col}>{col}</option>{/each}
-                </select>
+                <div class="cw-code-slots">
+                  {#each aCodeSlots as slot, i}
+                    <div class="cw-code-slot">
+                      <select
+                        value={slot ?? ""}
+                        onchange={(e) => {
+                          const val = (e.target as HTMLSelectElement).value || null;
+                          aCodeSlots = aCodeSlots.map((s, j) => (j === i ? val : s));
+                        }}
+                        disabled={running}
+                      >
+                        <option value="">(none)</option>
+                        {#each colsA.all as col (col)}<option value={col}>{col}</option>{/each}
+                      </select>
+                      {#if aCodeSlots.length > 1}
+                        <button
+                          type="button"
+                          class="cw-slot-remove"
+                          onclick={() => { aCodeSlots = aCodeSlots.filter((_, j) => j !== i); }}
+                          disabled={running}
+                        >×</button>
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if aCodeSlots[aCodeSlots.length - 1] !== null}
+                    <button
+                      type="button"
+                      class="cw-slot-add"
+                      onclick={() => { aCodeSlots = [...aCodeSlots, null]; }}
+                      disabled={running}
+                    >+ add column</button>
+                  {/if}
+                </div>
               </label>
               <label class="cw-field">
                 <span>Name</span>
@@ -459,12 +522,41 @@
           {#if colsB}
             <fieldset class="cw-fieldset">
               <legend>Version B</legend>
-              <label class="cw-field">
+              <label class="cw-field cw-field--code">
                 <span>Code</span>
-                <select bind:value={bCodeCol} disabled={running}>
-                  <option value={null}>(none)</option>
-                  {#each colsB.all as col (col)}<option value={col}>{col}</option>{/each}
-                </select>
+                <div class="cw-code-slots">
+                  {#each bCodeSlots as slot, i}
+                    <div class="cw-code-slot">
+                      <select
+                        value={slot ?? ""}
+                        onchange={(e) => {
+                          const val = (e.target as HTMLSelectElement).value || null;
+                          bCodeSlots = bCodeSlots.map((s, j) => (j === i ? val : s));
+                        }}
+                        disabled={running}
+                      >
+                        <option value="">(none)</option>
+                        {#each colsB.all as col (col)}<option value={col}>{col}</option>{/each}
+                      </select>
+                      {#if bCodeSlots.length > 1}
+                        <button
+                          type="button"
+                          class="cw-slot-remove"
+                          onclick={() => { bCodeSlots = bCodeSlots.filter((_, j) => j !== i); }}
+                          disabled={running}
+                        >×</button>
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if bCodeSlots[bCodeSlots.length - 1] !== null}
+                    <button
+                      type="button"
+                      class="cw-slot-add"
+                      onclick={() => { bCodeSlots = [...bCodeSlots, null]; }}
+                      disabled={running}
+                    >+ add column</button>
+                  {/if}
+                </div>
               </label>
               <label class="cw-field">
                 <span>Name</span>
@@ -545,7 +637,7 @@
         <div class="cw-downloads">
           <DownloadMenu
             primaryLabel="Changelog CSV"
-            filenameStem={fileStem(filesA)}
+            filenameStem={fileStem(filesA, filesB)}
             exportSource="crosswalk_changelog"
           />
         </div>
@@ -698,6 +790,48 @@
     border: 1px solid #d1d5db;
     border-radius: 3px;
     background: #fff;
+  }
+  .cw-field--code {
+    align-items: start;
+  }
+  .cw-code-slots {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .cw-code-slot {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+  }
+  .cw-code-slot select {
+    flex: 1;
+  }
+  .cw-slot-remove {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.8rem;
+    line-height: 1;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    background: #fff;
+    color: #9ca3af;
+    cursor: pointer;
+  }
+  .cw-slot-remove:hover:not(:disabled) {
+    color: #b91c1c;
+    border-color: #fca5a5;
+  }
+  .cw-slot-add {
+    font-size: 0.75rem;
+    color: #6b7280;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+  }
+  .cw-slot-add:hover:not(:disabled) {
+    color: #374151;
   }
   .cw-slider {
     display: flex;

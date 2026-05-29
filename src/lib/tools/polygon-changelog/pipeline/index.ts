@@ -22,9 +22,9 @@ export interface PipelineOptions {
   tauMatch: number;
   tauSame: number;
   sliverEps?: number;
-  aCodeCol: string | null;
+  aCodeCol: string[];
   aNameCol: string | null;
-  bCodeCol: string | null;
+  bCodeCol: string[];
   bNameCol: string | null;
 }
 
