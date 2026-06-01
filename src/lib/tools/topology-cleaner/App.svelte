@@ -21,11 +21,13 @@
   let loading = $state(false);
   let loadError = $state<string | null>(null);
 
-  // Sliders (meters). gapWidthM=0 → no gap filling. snapping auto = -1.
+  // Sliders (meters). gapWidthM=0 → no gap filling. sliverTolM is the unified
+  // near-miss tolerance: it both detects slivers and is the ST_CoverageClean snap
+  // distance that closes them (0 → slivers off, no snapping).
   let gapWidthM = $state(0);
-  let snapAuto = $state(true);
-  let snapValueM = $state(0);
-  const snappingM = $derived(snapAuto ? -1 : snapValueM);
+  const SLIVER_TOL_DEFAULT_M = 1;
+  const SLIVER_TOL_MAX_M = 50;
+  let sliverTolM = $state(SLIVER_TOL_DEFAULT_M);
 
   // Round x up to the nearest "nice" number (1/2/5 × 10^n).
   function niceNum(x: number): number {
@@ -147,6 +149,7 @@
     selectedKey = null;
     focusBbox = null;
     gapWidthM = 0;
+    sliverTolM = SLIVER_TOL_DEFAULT_M;
     recleanPending = false;
     if (recleanTimer) {
       clearTimeout(recleanTimer);
@@ -177,7 +180,7 @@
     try {
       const result = await runFromLoaded(
         duckdbState.conn!,
-        { gapWidthM, snappingM },
+        { gapWidthM, sliverTolM },
         (stage, label) => {
           currentStage = stage;
           stageLabel = label;
@@ -219,10 +222,13 @@
     recleaning = true;
     recleanPending = false;
     try {
-      const result = await recleanOnly(duckdbState.conn!, { gapWidthM, snappingM });
+      const result = await recleanOnly(duckdbState.conn!, { gapWidthM, sliverTolM });
       cleanedGeoJSON = result.cleanedGeoJSON;
       collapsedCount = result.collapsedCount;
       fixedKeys = result.fixedKeys;
+      // Slivers are re-detected at the current tolerance, so refresh the table+map.
+      issues = result.issues;
+      issuesGeoJSON = result.issuesGeoJSON;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -250,12 +256,6 @@
       return;
     }
     selectIssue(key);
-  }
-
-  function enableSnapAuto(): void {
-    if (snapAuto) return;
-    snapAuto = true;
-    scheduleReclean();
   }
 
   function stageStatus(idx: number): "pending" | "active" | "done" | "error" {
@@ -324,43 +324,27 @@
             large to clean automatically.
           </p>
         </label>
-
-        <details class="tc-advanced">
-          <summary>Advanced</summary>
-          <label class="tc-slider">
-            <span>
-              Snapping — {snapAuto ? "auto" : `${snapValueM} m`}
-              {#if !snapAuto}
-                <button type="button" class="tc-auto" onclick={enableSnapAuto}>reset to auto</button>
-              {/if}
-            </span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={snapAuto ? 0 : snapValueM}
-              oninput={(e) => {
-                snapValueM = Number((e.target as HTMLInputElement).value);
-                snapAuto = false;
-                scheduleReclean();
-              }}
-              disabled={running}
-            />
-            <p class="tc-hint">
-              Welds near-coincident edges within this distance. <strong>Auto</strong> lets GEOS pick
-              a tolerance from the data extent — best for most inputs.
-            </p>
-          </label>
-        </details>
       </section>
 
       <section class="tc-step">
-        <h2 class="tc-step-heading">Sliver detection</h2>
-        <p class="tc-hint">
-          Flags thin slits between two units where their boundaries should meet at a T-junction but
-          the coordinates miss. Detected automatically and listed alongside gaps and overlaps.
-        </p>
+        <h2 class="tc-step-heading">Sliver tolerance</h2>
+        <label class="tc-slider">
+          <span>Near-miss up to — {sliverTolM === 0 ? "off" : fmtGap(sliverTolM)}</span>
+          <input
+            type="range"
+            min="0"
+            max={SLIVER_TOL_MAX_M}
+            step="0.5"
+            bind:value={sliverTolM}
+            oninput={scheduleReclean}
+            disabled={running}
+          />
+          <p class="tc-hint">
+            Thin slits where two units' boundaries should meet at a T-junction but the coordinates
+            miss by less than this. The same distance is used to snap them shut when cleaning, so
+            anything flagged is closed. Set to <strong>off</strong> to ignore slivers.
+          </p>
+        </label>
       </section>
     {/if}
 
@@ -401,6 +385,12 @@
 
   <div class="tc-result">
     <div class="tc-map-pane">
+      {#if running || recleaning}
+        <div class="tc-busy" role="status" aria-live="polite">
+          <span class="tc-busy-spinner" aria-hidden="true"></span>
+          {running ? "Processing layer…" : "Updating…"}
+        </div>
+      {/if}
       {#if cleanedGeoJSON}
         <div class="tc-view-toolbar">
           <div class="tc-mode-btns" role="group" aria-label="View mode">
@@ -509,28 +499,6 @@
     margin: 0;
     line-height: 1.3;
   }
-  .tc-auto {
-    margin-left: 0.4rem;
-    font-size: 0.7rem;
-    color: #1d4ed8;
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    text-decoration: underline;
-  }
-  .tc-advanced {
-    margin-top: 0.5rem;
-  }
-  .tc-advanced summary {
-    font-size: 0.8rem;
-    color: #6b7280;
-    cursor: pointer;
-    user-select: none;
-  }
-  .tc-advanced > .tc-slider {
-    margin-top: 0.5rem;
-  }
   .tc-num-input {
     width: 100%;
     padding: 0.3rem 0.4rem;
@@ -634,6 +602,36 @@
     .tc-map-pane {
       border-right: 1px solid #e5e7eb;
       border-bottom: none;
+    }
+  }
+  .tc-busy {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 11;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #1d4ed8;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  }
+  .tc-busy-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid #bfdbfe;
+    border-top-color: #1d4ed8;
+    border-radius: 50%;
+    animation: tc-spin 0.7s linear infinite;
+  }
+  @keyframes tc-spin {
+    to {
+      transform: rotate(360deg);
     }
   }
   .tc-view-toolbar {

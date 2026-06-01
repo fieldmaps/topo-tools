@@ -1,7 +1,13 @@
 import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { tableToGeoJSON } from "$lib/db/geojson";
 import { buildClean, buildInput, buildReducedInput, countRows } from "./clean";
-import { buildIssues, checkFixedIssues, type IssueRow } from "./issues";
+import {
+  buildGapRegions,
+  buildOverlapRegions,
+  checkFixedIssues,
+  rebuildSliversAndIssues,
+  type IssueRow,
+} from "./issues";
 import { metersToDegrees, setCentroidLat } from "./units";
 
 export type { IssueRow } from "./issues";
@@ -20,7 +26,8 @@ export class PipelineError extends Error {
 
 export interface CleanOptions {
   gapWidthM: number; // primary slider, meters (0 = no gap filling)
-  snappingM: number; // advanced slider, meters (-1 = auto)
+  sliverTolM: number; // unified "Sliver tolerance" slider, meters: detection cutoff
+  // AND the ST_CoverageClean snap distance that closes the slivers (0 = no slivers)
 }
 
 export interface CleanResult {
@@ -38,6 +45,8 @@ export interface RecleanResult {
   cleanedGeoJSON: string;
   collapsedCount: number;
   fixedKeys: Set<string>;
+  issues: IssueRow[];
+  issuesGeoJSON: string;
 }
 
 // Carried from the full run to cheap re-runs.
@@ -83,15 +92,21 @@ async function computeBounds(
   return null;
 }
 
-// Re-clean at the current slider values. Cheap: a single ST_CoverageClean
-// against the frozen tc_input. The issues table is static (a property of the
-// input) so it is NOT recomputed here.
+// Re-clean at the current slider values. The sliver tolerance is the unified knob:
+// it re-detects slivers (cheap — ST_CoverageInvalidEdges) AND is the snap distance
+// passed to ST_CoverageClean, so anything flagged is closed at the same tolerance.
+// Gap + overlap regions are static (built once per load) and are NOT recomputed.
 export async function recleanOnly(
   conn: AsyncDuckDBConnection,
   opts: CleanOptions,
 ): Promise<RecleanResult> {
-  const snapDeg = metersToDegrees(opts.snappingM);
+  const snapDeg = metersToDegrees(opts.sliverTolM);
   const gapDeg = metersToDegrees(opts.gapWidthM);
+
+  // Re-detect slivers at the new tolerance and rebuild the issues table first, so
+  // checkFixedIssues queries a tc_issues consistent with the slider value.
+  const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM);
+  cachedIssues = issuesRes.rows;
 
   await cleanResilient(conn, "tc_clean", snapDeg, gapDeg);
 
@@ -101,6 +116,8 @@ export async function recleanOnly(
     cleanedGeoJSON: await tableToGeoJSON(conn, "tc_clean", "layer_attr"),
     collapsedCount: Math.max(0, totalCount - kept),
     fixedKeys,
+    issues: issuesRes.rows,
+    issuesGeoJSON: issuesRes.geojson,
   };
 }
 
@@ -122,20 +139,16 @@ export async function runFromLoaded(
   const originalGeoJSON = await tableToGeoJSON(conn, "layer_01", null);
 
   onProgress(3, "Finding gaps, overlaps & slivers");
-  // Enumerate discrete gap + overlap issues for the table. Best-effort: internal
-  // failures degrade to fewer/no issues, never abort the clean.
-  let issues: IssueRow[] = [];
-  let issuesGeoJSON = '{"type":"FeatureCollection","features":[]}';
-  try {
-    const res = await buildIssues(conn);
-    issues = res.rows;
-    issuesGeoJSON = res.geojson;
-  } catch (e) {
-    console.warn("issue enumeration failed; table will be empty:", e);
-  }
-  cachedIssues = issues;
+  // Static region tables (independent of the sliders): gaps + overlaps are a
+  // property of the input, built once. Best-effort — failures degrade to an empty
+  // region table, never abort the clean. Slivers are built inside recleanOnly,
+  // since they depend on the (live) sliver-tolerance slider.
+  await buildGapRegions(conn);
+  await buildOverlapRegions(conn);
 
   onProgress(4, "Cleaning topology");
+  // recleanOnly re-detects slivers at the current tolerance, assembles the issues
+  // table, then runs ST_CoverageClean (snap = sliver tolerance).
   let reclean: RecleanResult;
   try {
     reclean = await recleanOnly(conn, opts);
@@ -146,8 +159,8 @@ export async function runFromLoaded(
   return {
     originalGeoJSON,
     cleanedGeoJSON: reclean.cleanedGeoJSON,
-    issues,
-    issuesGeoJSON,
+    issues: reclean.issues,
+    issuesGeoJSON: reclean.issuesGeoJSON,
     bounds,
     totalCount,
     collapsedCount: reclean.collapsedCount,

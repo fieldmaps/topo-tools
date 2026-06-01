@@ -20,12 +20,17 @@ import { degSqToM2, degToM, metersToDegrees } from "./units";
 // overlap regions from the sliver lines to avoid duplicating every overlap as a
 // sliver. Real near-miss slivers are open gaps, so they don't lie inside an
 // overlap polygon and survive the subtraction.
-const SLIVER_NEARMISS_TOL_M = 10; // coverage-validator tolerance: flag gaps narrower than this
-const SLIVER_CLUSTER_RADIUS_M = 10; // merge invalid edges within ~this into one sliver (the gap+overlap pair)
+//
+// The near-miss tolerance is the single "Sliver tolerance" slider: it is both the
+// detection cutoff here AND the ST_CoverageClean snapping distance that closes the
+// slivers (a near-miss narrower than the tolerance is snapped shut at the same
+// tolerance). The edge cluster/dedup buffer tracks the tolerance for the same
+// reason — the gap+overlap edge pair of one near-miss sits ~tolerance apart.
 
 // A discrete topology problem in the *input* coverage, surfaced in the issues
-// table so the user can click to zoom to it. Issues are computed once at load
-// (they're a property of the input, independent of the cleaning sliders).
+// table so the user can click to zoom to it. Gaps and overlaps are computed once
+// at load (a property of the input); slivers are recomputed whenever the sliver-
+// tolerance slider moves, since the tolerance defines what counts as a sliver.
 
 export interface IssueRow {
   key: string; // "gap-3" / "overlap-7" / "sliver-2" — stable id, also the map feature id
@@ -52,7 +57,7 @@ async function emptyRegions(conn: AsyncDuckDBConnection, table: string, extra = 
 // gaps → convert each ring back to a polygon via difference against the filled
 // exterior. Independent of ST_CoverageClean, so works even when the coverage
 // has overlaps or degenerate edges that would trip the cleaner.
-async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<void> {
+export async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<void> {
   try {
     await conn.query(`--sql
       CREATE OR REPLACE TABLE tc_gap_regions AS
@@ -80,10 +85,31 @@ async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<void> {
   }
 }
 
-async function buildSliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
+async function emptySliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
+  await conn.query(`--sql
+    CREATE OR REPLACE TABLE tc_sliver_regions AS
+    SELECT NULL::BIGINT AS n, NULL::GEOMETRY AS geom,
+           NULL::DOUBLE AS area_deg2, NULL::DOUBLE AS mic_radius_deg,
+           NULL::DOUBLE AS xmin, NULL::DOUBLE AS ymin,
+           NULL::DOUBLE AS xmax, NULL::DOUBLE AS ymax
+    WHERE FALSE
+  `);
+}
+
+// tolM is the near-miss tolerance (the "Sliver tolerance" slider, meters): flag
+// gaps narrower than this. The edge cluster/dedup buffer reuses the same value.
+// tolM <= 0 disables sliver detection (empty table).
+export async function buildSliverRegions(
+  conn: AsyncDuckDBConnection,
+  tolM: number,
+): Promise<void> {
+  if (!(tolM > 0)) {
+    await emptySliverRegions(conn);
+    return;
+  }
   // Scientific-notation DOUBLE literals (tiny degree values; avoids DECIMAL overflow).
-  const tol = metersToDegrees(SLIVER_NEARMISS_TOL_M).toExponential();
-  const r = metersToDegrees(SLIVER_CLUSTER_RADIUS_M).toExponential();
+  const tol = metersToDegrees(tolM).toExponential();
+  const r = tol; // cluster/dedup buffer = tolerance
   try {
     await conn.query(`--sql
       CREATE OR REPLACE TABLE tc_sliver_regions AS
@@ -120,14 +146,7 @@ async function buildSliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
     `);
   } catch (e) {
     console.warn("sliver detection failed; skipping slivers:", e);
-    await conn.query(`--sql
-      CREATE OR REPLACE TABLE tc_sliver_regions AS
-      SELECT NULL::BIGINT AS n, NULL::GEOMETRY AS geom,
-             NULL::DOUBLE AS area_deg2, NULL::DOUBLE AS mic_radius_deg,
-             NULL::DOUBLE AS xmin, NULL::DOUBLE AS ymin,
-             NULL::DOUBLE AS xmax, NULL::DOUBLE AS ymax
-      WHERE FALSE
-    `);
+    await emptySliverRegions(conn);
   }
 }
 
@@ -135,7 +154,7 @@ async function buildSliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
 // (touching borders intersect as lines and are dropped by CollectionExtract).
 // Uses bbox predicates instead of ST_Intersects in the JOIN so DuckDB plans
 // this as PIECEWISE_MERGE_JOIN rather than SPATIAL_JOIN (which OOMs in WASM).
-async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<void> {
+export async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<void> {
   try {
     await conn.query(`--sql
       CREATE OR REPLACE TABLE tc_overlap_regions AS
@@ -158,11 +177,20 @@ async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<void> {
   }
 }
 
-export async function buildIssues(conn: AsyncDuckDBConnection): Promise<IssuesResult> {
-  await buildGapRegions(conn);
-  await buildOverlapRegions(conn);
-  await buildSliverRegions(conn);
+// Rebuild the slivers at the current tolerance, then re-assemble the issues
+// table/rows/geojson. The gap + overlap region tables are inputs (built once per
+// load by runFromLoaded), so only slivers and the union are recomputed here.
+export async function rebuildSliversAndIssues(
+  conn: AsyncDuckDBConnection,
+  tolM: number,
+): Promise<IssuesResult> {
+  await buildSliverRegions(conn, tolM);
+  return assembleIssues(conn);
+}
 
+// Union the three region tables into tc_issues and derive the table rows + map
+// GeoJSON. Assumes tc_gap_regions / tc_overlap_regions / tc_sliver_regions exist.
+async function assembleIssues(conn: AsyncDuckDBConnection): Promise<IssuesResult> {
   await conn.query(`--sql
     CREATE OR REPLACE TABLE tc_issues AS
     SELECT 'gap-' || n AS key, 'gap' AS kind, ST_Area(geom) AS area_deg,
