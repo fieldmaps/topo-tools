@@ -1,34 +1,32 @@
 import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { degSqToM2, degToM, metersToDegrees } from "./units";
 
-// Notch detection. A "notch" is a near-miss T-junction BETWEEN two polygons:
-// a vertex of one unit that should sit on a different unit's edge but the
-// coordinates miss, leaving a thin gap. We detect it directly as that vertex —
-// buffer-free and inherently between-two-polygons, so it avoids both the WASM
-// buffer throw and the single-polygon convex-hull artifacts (a smooth interior
-// boundary has no vertex near ANOTHER polygon, so it never fires).
-//
-// Notches are near-miss T-junctions between polygons: places where adjacent
-// units should share an edge but the coordinates miss, leaving a thin gap.
-// Detected with GEOS's coverage validator, ST_CoverageInvalidEdges — it returns
-// the boundary edges where the coverage is invalid (gaps/overlaps). Its tolerance
-// flags gaps NARROWER than the value: a near-miss thinner than this is a sliver
-// notch; wider ones are legitimate gaps/V-notches, left alone. Detected by default
+// Sliver detection. A "sliver" is a near-miss T-junction between two polygons:
+// adjacent units that should share an edge but whose coordinates miss, leaving a
+// thin gap. Detected with GEOS's coverage validator, ST_CoverageInvalidEdges,
+// which returns the boundary EDGES where the coverage is invalid (gaps/overlaps).
+// Its tolerance flags gaps NARROWER than the value: a near-miss thinner than this
+// is a sliver; wider ones are legitimate gaps, left alone. Detected by default
 // (shown like gaps/overlaps). Native and fast — no per-vertex distance blowup, and
 // nothing fires inside a single smooth polygon, so no convex-hull artifacts.
-const NOTCH_NEARMISS_TOL_M = 10; // coverage-validator tolerance: flag gaps narrower than this
-const NOTCH_MARKER_M = 3; // pad the invalid edge's bbox into a clickable marker box
+//
+// The sliver geometry is the actual invalid EDGE (a line tracing exactly where
+// the two boundaries fail to meet), rendered as a line. We only buffer the edges
+// transiently to cluster them — the gap+overlap pair of one near-miss merges into
+// a single sliver — then take the real edges back via intersection.
+const SLIVER_NEARMISS_TOL_M = 10; // coverage-validator tolerance: flag gaps narrower than this
+const SLIVER_CLUSTER_RADIUS_M = 10; // merge invalid edges within ~this into one sliver (the gap+overlap pair)
 
 // A discrete topology problem in the *input* coverage, surfaced in the issues
 // table so the user can click to zoom to it. Issues are computed once at load
 // (they're a property of the input, independent of the cleaning sliders).
 
 export interface IssueRow {
-  key: string; // "gap-3" / "overlap-7" / "notch-2" — stable id, also the map feature id
-  kind: "gap" | "overlap" | "notch";
+  key: string; // "gap-3" / "overlap-7" / "sliver-2" — stable id, also the map feature id
+  kind: "gap" | "overlap" | "sliver";
   areaM2: number; // approximate, for display/sorting
   maxWidthM: number; // longer bounding-box dimension, approximate
-  units: number[]; // fids involved (overlaps: two units; gaps: none; notches: one unit)
+  units: number[]; // fids involved (overlaps: two units; gaps: none; slivers: one unit)
   bbox: [number, number, number, number];
 }
 
@@ -76,42 +74,37 @@ async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<void> {
   }
 }
 
-async function buildNotchRegions(conn: AsyncDuckDBConnection): Promise<void> {
+async function buildSliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
   // Scientific-notation DOUBLE literals (tiny degree values; avoids DECIMAL overflow).
-  const tol = metersToDegrees(NOTCH_NEARMISS_TOL_M).toExponential();
-  const pad = metersToDegrees(NOTCH_MARKER_M).toExponential();
+  const tol = metersToDegrees(SLIVER_NEARMISS_TOL_M).toExponential();
+  const r = metersToDegrees(SLIVER_CLUSTER_RADIUS_M).toExponential();
   try {
     await conn.query(`--sql
-      CREATE OR REPLACE TABLE tc_notch_regions AS
+      CREATE OR REPLACE TABLE tc_sliver_regions AS
       WITH ie AS (
+        -- one geometry holding all invalid edges (clean linestrings)
         SELECT ST_CoverageInvalidEdges_Agg(geom, ${tol}) AS e
         FROM layer_01 WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
       ),
-      edges AS (
-        SELECT (UNNEST(ST_Dump(e))).geom AS g
-        FROM ie WHERE e IS NOT NULL AND NOT ST_IsEmpty(e)
-      ),
-      -- merge touching invalid edges (a near-miss has a gap+overlap pair) into one notch
-      merged AS (
-        SELECT (UNNEST(ST_Dump(ST_Union_Agg(g)))).geom AS g
-        FROM edges WHERE g IS NOT NULL AND NOT ST_IsEmpty(g) AND ST_Length(g) > 0
-      )
+      buf AS (SELECT e, ST_Buffer(e, ${r}) AS bg FROM ie WHERE e IS NOT NULL AND NOT ST_IsEmpty(e)),
+      -- cluster the edges (overlapping buffers group the gap+overlap pair),
+      -- but keep the ACTUAL edge lines via intersection with each cluster
+      clusters AS (SELECT e, (UNNEST(ST_Dump(bg))).geom AS blob FROM buf),
+      lines AS (SELECT ST_Intersection(e, blob) AS geom FROM clusters)
       SELECT
-        ROW_NUMBER() OVER (ORDER BY ST_Length(g) DESC) AS n,
-        -- mark the near-miss with a small box around the invalid edge's bbox
-        ST_MakeEnvelope(ST_XMin(g) - ${pad}, ST_YMin(g) - ${pad},
-                        ST_XMax(g) + ${pad}, ST_YMax(g) + ${pad}) AS geom,
-        (ST_XMax(g) - ST_XMin(g) + 2 * ${pad}) * (ST_YMax(g) - ST_YMin(g) + 2 * ${pad}) AS area_deg2,
-        ${pad}::DOUBLE AS mic_radius_deg,
-        ST_XMin(g) - ${pad} AS xmin, ST_YMin(g) - ${pad} AS ymin,
-        ST_XMax(g) + ${pad} AS xmax, ST_YMax(g) + ${pad} AS ymax
-      FROM merged WHERE NOT ST_IsEmpty(g)
-      ORDER BY ST_Length(g) DESC
+        ROW_NUMBER() OVER (ORDER BY ST_Length(geom) DESC) AS n,
+        geom,
+        0.0::DOUBLE AS area_deg2, -- a line has no area
+        0.0::DOUBLE AS mic_radius_deg, -- nor a width
+        ST_XMin(geom) AS xmin, ST_YMin(geom) AS ymin,
+        ST_XMax(geom) AS xmax, ST_YMax(geom) AS ymax
+      FROM lines WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      ORDER BY ST_Length(geom) DESC
     `);
   } catch (e) {
-    console.warn("notch detection failed; skipping notches:", e);
+    console.warn("sliver detection failed; skipping slivers:", e);
     await conn.query(`--sql
-      CREATE OR REPLACE TABLE tc_notch_regions AS
+      CREATE OR REPLACE TABLE tc_sliver_regions AS
       SELECT NULL::BIGINT AS n, NULL::GEOMETRY AS geom,
              NULL::DOUBLE AS area_deg2, NULL::DOUBLE AS mic_radius_deg,
              NULL::DOUBLE AS xmin, NULL::DOUBLE AS ymin,
@@ -151,7 +144,7 @@ async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<void> {
 export async function buildIssues(conn: AsyncDuckDBConnection): Promise<IssuesResult> {
   await buildGapRegions(conn);
   await buildOverlapRegions(conn);
-  await buildNotchRegions(conn);
+  await buildSliverRegions(conn);
 
   await conn.query(`--sql
     CREATE OR REPLACE TABLE tc_issues AS
@@ -167,10 +160,10 @@ export async function buildIssues(conn: AsyncDuckDBConnection): Promise<IssuesRe
            ST_XMin(geom), ST_YMin(geom), ST_XMax(geom), ST_YMax(geom)
     FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
     UNION ALL
-    SELECT 'notch-' || n, 'notch', area_deg2, mic_radius_deg,
+    SELECT 'sliver-' || n, 'sliver', area_deg2, mic_radius_deg,
            NULL::BIGINT, NULL::BIGINT, geom,
            xmin, ymin, xmax, ymax
-    FROM tc_notch_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    FROM tc_sliver_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
   `);
 
   const meta = await conn.query(`--sql
@@ -185,7 +178,7 @@ export async function buildIssues(conn: AsyncDuckDBConnection): Promise<IssuesRe
   const rows: IssueRow[] = (
     meta.toArray() as Array<{
       key: string;
-      kind: "gap" | "overlap" | "notch";
+      kind: "gap" | "overlap" | "sliver";
       area_deg: number;
       mic_radius_deg: number;
       unit_a: bigint | number | null;
@@ -198,8 +191,9 @@ export async function buildIssues(conn: AsyncDuckDBConnection): Promise<IssuesRe
   ).map((r) => ({
     key: r.key,
     kind: r.kind,
-    areaM2: degSqToM2(r.area_deg),
-    maxWidthM: 2 * degToM(r.mic_radius_deg),
+    // Slivers are lines — no area or width; show "—" rather than "0.0 m²".
+    areaM2: r.kind === "sliver" ? NaN : degSqToM2(r.area_deg),
+    maxWidthM: r.kind === "sliver" ? NaN : 2 * degToM(r.mic_radius_deg),
     units: [r.unit_a, r.unit_b]
       .filter((u): u is bigint | number => u !== null)
       .map((u) => Number(u)),

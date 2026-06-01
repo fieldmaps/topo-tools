@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { lineWidth, loadStyle, polyFilter } from "$lib/utils/mapStyle";
+  import { createSpin } from "$lib/utils/spin";
   import type {
     ExpressionSpecification,
     FilterSpecification,
@@ -8,8 +10,6 @@
   } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { onDestroy, onMount } from "svelte";
-  import { createSpin } from "$lib/utils/spin";
-  import { loadStyle, lineWidth, polyFilter } from "$lib/utils/mapStyle";
 
   let {
     originalGeojson = null,
@@ -35,7 +35,7 @@
   const CLEANED_FILL = "#aad4e0"; // blue
   const OVERLAP = "#e11d48"; // red
   const GAP = "#f59e0b"; // amber
-  const NOTCH = "#7c3aed"; // purple
+  const SLIVER = "#7c3aed"; // purple
 
   let container: HTMLDivElement | undefined;
   let map: MaplibreMap | undefined;
@@ -51,8 +51,8 @@
     OVERLAP,
     "gap",
     GAP,
-    "notch",
-    NOTCH,
+    "sliver",
+    SLIVER,
     "#888888",
   ] as unknown as ExpressionSpecification;
 
@@ -134,7 +134,16 @@
         source: "tc-issues",
         filter: polyFilter,
         layout: { visibility: "none" },
-        paint: { "line-color": issueColor, "line-width": 1.5 },
+        paint: { "line-color": issueColor, "line-width": 1.5, "line-opacity": 0.6 },
+      });
+      // Slivers are line geometries (the offending edges); render them as lines.
+      map!.addLayer({
+        id: "tc-issues-sliver",
+        type: "line",
+        source: "tc-issues",
+        filter: ["==", ["get", "kind"], "sliver"] as FilterSpecification,
+        layout: { visibility: "none", "line-cap": "round" },
+        paint: { "line-color": SLIVER, "line-width": 3, "line-opacity": 0.6 },
       });
       map!.addLayer({
         id: "tc-issues-highlight",
@@ -142,22 +151,23 @@
         source: "tc-issues",
         filter: ["==", ["get", "key"], ""] as FilterSpecification,
         layout: { visibility: "none" },
-        paint: { "line-color": "#111111", "line-width": 3 },
+        paint: { "line-color": "#111111", "line-width": 3, "line-opacity": 0.6 },
       });
-      map!.on("click", "tc-issues-fill", (e) => {
-        const key = e.features?.[0]?.properties?.key;
-        onIssueClick?.(key == null ? null : String(key));
-      });
-      map!.on("mouseenter", "tc-issues-fill", () => {
-        if (map) map.getCanvas().style.cursor = "pointer";
-      });
-      map!.on("mouseleave", "tc-issues-fill", () => {
-        if (map) map.getCanvas().style.cursor = "";
-      });
+      for (const layer of ["tc-issues-fill", "tc-issues-sliver"]) {
+        map!.on("click", layer, (e) => {
+          const key = e.features?.[0]?.properties?.key;
+          onIssueClick?.(key == null ? null : String(key));
+        });
+        map!.on("mouseenter", layer, () => {
+          if (map) map.getCanvas().style.cursor = "pointer";
+        });
+        map!.on("mouseleave", layer, () => {
+          if (map) map.getCanvas().style.cursor = "";
+        });
+      }
       applySideVisibility(showSide);
     }
   });
-
 
   // Highlight the selected issue.
   $effect(() => {
@@ -183,6 +193,7 @@
     vis("tc-original-line", isA);
     vis("tc-issues-fill", isA);
     vis("tc-issues-outline", isA);
+    vis("tc-issues-sliver", isA);
     vis("tc-issues-highlight", isA);
     vis("tc-cleaned-fill", !isA);
     vis("tc-cleaned-line", !isA);
@@ -224,15 +235,17 @@
         [b[0], b[1]],
         [b[2], b[3]],
       ],
-      { padding: 120, maxZoom: 17, animate: true },
+      // Zoom in as far as z25 for tiny slivers; larger issues cap out sooner on their own bbox.
+      { padding: 120, maxZoom: 25, animate: true },
     );
   });
 
   function handleMapClick(e: MapMouseEvent): void {
     if (!map || !onIssueClick) return;
-    if (!map.getLayer("tc-issues-fill")) return;
+    const layers = ["tc-issues-fill", "tc-issues-sliver"].filter((l) => map!.getLayer(l));
+    if (layers.length === 0) return;
     // Clicking empty space (not an issue) clears the selection.
-    const feats = map.queryRenderedFeatures(e.point, { layers: ["tc-issues-fill"] });
+    const feats = map.queryRenderedFeatures(e.point, { layers });
     if (feats.length === 0) onIssueClick(null);
   }
 
@@ -246,9 +259,9 @@
       center: [20, 5],
       zoom: Math.log2((Math.min(container.clientWidth, container.clientHeight) * Math.PI) / 512),
       // Default maxZoom is 22; raise to MapLibre's hard max so the sub-metre
-      // notch slits can be inspected manually. Basemap tiles overzoom (blur)
+      // sliver slits can be inspected manually. Basemap tiles overzoom (blur)
       // past ~z14 but the vector issue overlay stays crisp at any zoom.
-      maxZoom: 24,
+      maxZoom: 25,
       attributionControl: { compact: true },
     });
     // Distance scale bar so the zoomed-in scale is legible.

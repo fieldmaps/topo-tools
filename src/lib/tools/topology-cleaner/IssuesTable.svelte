@@ -17,18 +17,18 @@
 
   let showGaps = $state(true);
   let showOverlaps = $state(true);
-  let showNotches = $state(true);
+  let showSlivers = $state(true);
 
   const gapCount = $derived(rows.filter((r) => r.kind === "gap").length);
   const overlapCount = $derived(rows.filter((r) => r.kind === "overlap").length);
-  const notchCount = $derived(rows.filter((r) => r.kind === "notch").length);
-  const fixableCount = $derived(rows.filter((r) => r.kind !== "notch").length);
+  const sliverCount = $derived(rows.filter((r) => r.kind === "sliver").length);
+  const fixableCount = $derived(rows.filter((r) => r.kind !== "sliver").length);
   const fixedCount = $derived(rows.filter((r) => fixedKeys.has(r.key)).length);
   const visible = $derived(
     rows.filter((r) => {
       if (r.kind === "gap") return showGaps;
       if (r.kind === "overlap") return showOverlaps;
-      if (r.kind === "notch") return showNotches;
+      if (r.kind === "sliver") return showSlivers;
       return false;
     }),
   );
@@ -50,13 +50,13 @@
   function kindLabel(r: IssueRow): string {
     if (r.kind === "overlap") return "Overlap";
     if (r.kind === "gap") return "Gap";
-    return "Notch";
+    return "Sliver";
   }
 
   function kindClass(r: IssueRow): string {
     if (r.kind === "overlap") return "tc-key--overlap";
     if (r.kind === "gap") return "tc-key--gap";
-    return "tc-key--notch";
+    return "tc-key--sliver";
   }
 
   function isFixed(r: IssueRow): boolean {
@@ -90,12 +90,12 @@
       </button>
       <button
         type="button"
-        class="tc-chip tc-chip--notch"
-        class:off={!showNotches}
-        onclick={() => (showNotches = !showNotches)}
-        title="Toggle notches"
+        class="tc-chip tc-chip--sliver"
+        class:off={!showSlivers}
+        onclick={() => (showSlivers = !showSlivers)}
+        title="Toggle slivers"
       >
-        <span class="tc-key tc-key--notch"></span> Notches {notchCount}
+        <span class="tc-key tc-key--sliver"></span> Slivers {sliverCount}
       </button>
     </div>
   </div>
@@ -246,7 +246,7 @@
   .tc-key--gap {
     background: #f59e0b;
   }
-  .tc-key--notch {
+  .tc-key--sliver {
     background: #7c3aed;
   }
   .tc-check-cell {

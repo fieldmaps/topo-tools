@@ -121,7 +121,7 @@ export async function runFromLoaded(
   const bounds = await computeBounds(conn);
   const originalGeoJSON = await tableToGeoJSON(conn, "layer_01", null);
 
-  onProgress(3, "Finding gaps, overlaps & notches");
+  onProgress(3, "Finding gaps, overlaps & slivers");
   // Enumerate discrete gap + overlap issues for the table. Best-effort: internal
   // failures degrade to fewer/no issues, never abort the clean.
   let issues: IssueRow[] = [];

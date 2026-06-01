@@ -11,7 +11,7 @@
   const STAGE_LABELS = [
     "Load file",
     "Analyze coverage",
-    "Find gaps, overlaps & notches",
+    "Find gaps, overlaps & slivers",
     "Clean topology",
   ];
 
@@ -356,7 +356,7 @@
       </section>
 
       <section class="tc-step">
-        <h2 class="tc-step-heading">Notch detection</h2>
+        <h2 class="tc-step-heading">Sliver detection</h2>
         <p class="tc-hint">
           Flags thin slits between two units where their boundaries should meet at a T-junction but
           the coordinates miss. Detected automatically and listed alongside gaps and overlaps.
