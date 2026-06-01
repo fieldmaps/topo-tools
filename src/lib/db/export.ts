@@ -6,7 +6,7 @@ import { duckdbState } from "./duckdb.svelte";
 export type ExportSource =
   | "extend"
   | "clip"
-  | "clean"
+  | "clean_topology"
   | "crosswalk_overlay"
   | "crosswalk_changelog";
 
@@ -119,7 +119,7 @@ interface SourceConfig {
 const SOURCES: Record<ExportSource, SourceConfig> = {
   extend: { table: "layer_05", attrTable: "layer_attr", suffix: "_ee", kind: "spatial" },
   clip: { table: "layer_clip", attrTable: "layer_attr", suffix: "_em", kind: "spatial" },
-  clean: { table: "layer_01", attrTable: "layer_attr", suffix: "_cleaned", kind: "spatial" },
+  clean_topology: { table: "tc_clean", attrTable: "layer_attr", suffix: "_cleaned", kind: "spatial" },
   crosswalk_overlay: {
     table: "cw_overlay_render",
     attrTable: null,

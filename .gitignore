@@ -25,6 +25,9 @@ npm-debug.log*
 
 .claude/
 .playwright-cli/
+tmp/
 
 # Assets synced at build time by scripts/sync-*.mjs — see package.json prebuild
 public/duckdb/
+
+scripts/add-geom-ids.mjs

@@ -7,6 +7,13 @@ export interface Tool {
 
 export const tools: Tool[] = [
   {
+    slug: "clean",
+    name: "Topology Cleaner",
+    tagline:
+      "Detect overlaps and gaps in a polygon coverage and clean them automatically, with an adjustable gap-width threshold.",
+    iconHref: "/icons/tools/topology-cleaner.svg",
+  },
+  {
     slug: "extend",
     name: "Edge Extender",
     tagline:

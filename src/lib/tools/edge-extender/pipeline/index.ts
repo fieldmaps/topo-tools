@@ -1,5 +1,5 @@
-import type { AsyncDuckDB, AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
-import { stageClean } from "./clean";
+import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
+import { tableToGeoJSON } from "$lib/db/geojson";
 import { stageLines } from "./lines";
 import { stageMerge } from "./merge";
 import { stagePoints } from "./points";
@@ -23,65 +23,7 @@ export interface PipelineResult {
 }
 
 export async function getOriginalGeojson(conn: AsyncDuckDBConnection): Promise<string> {
-  const origRows = await conn.query(`--sql
-    SELECT ST_AsGeoJSON(geom) AS _geom FROM layer_01 WHERE geom IS NOT NULL
-  `);
-  const features = origRows.toArray().map((row: Record<string, unknown>) => ({
-    type: "Feature",
-    geometry: JSON.parse(row._geom as string),
-    properties: {},
-  }));
-  return JSON.stringify({ type: "FeatureCollection", features });
-}
-
-// GeoJSON serialization with attribute join. ST_AsGeoJSON avoids GDAL driver
-// type/geometry incompatibilities; the same logic was previously inlined at
-// the tail of runPipeline. Parameterized on source table so it can also
-// serialize the cleaned input (layer_01) when extension fails.
-async function buildJoinedGeoJSON(
-  conn: AsyncDuckDBConnection,
-  sourceTable: string,
-): Promise<string> {
-  const attrDesc = await conn.query("DESCRIBE layer_attr");
-  const attrSchema = attrDesc.toArray() as Array<{
-    column_name: string;
-    column_type: string;
-  }>;
-  const isIncompatible = (t: string) =>
-    t === "BLOB" ||
-    t === "HUGEINT" ||
-    t === "UHUGEINT" ||
-    t.startsWith("STRUCT") ||
-    t.startsWith("MAP") ||
-    t.includes("[]");
-  const propKeys = attrSchema.filter((r) => r.column_name !== "fid").map((r) => r.column_name);
-  const attrExprs = attrSchema
-    .filter((r) => r.column_name !== "fid")
-    .map((r) => {
-      const col = JSON.stringify(r.column_name);
-      return isIncompatible(r.column_type) ? `CAST(b.${col} AS VARCHAR) AS ${col}` : `b.${col}`;
-    });
-  const selectCols = attrExprs.length > 0 ? ", " + attrExprs.join(", ") : "";
-
-  const rows = await conn.query(`--sql
-    SELECT ST_AsGeoJSON(a.geom) AS _geom${selectCols}
-    FROM ${sourceTable} AS a
-    LEFT JOIN layer_attr AS b ON a.fid = b.fid
-    WHERE a.geom IS NOT NULL
-  `);
-
-  const features = rows.toArray().map((row: Record<string, unknown>) => {
-    const props: Record<string, unknown> = {};
-    for (const k of propKeys) props[k] = row[k];
-    return {
-      type: "Feature",
-      geometry: JSON.parse(row._geom as string),
-      properties: props,
-    };
-  });
-  return JSON.stringify({ type: "FeatureCollection", features }, (_, v) =>
-    typeof v === "bigint" ? Number(v) : v,
-  );
+  return tableToGeoJSON(conn, "layer_01", null);
 }
 
 async function runValidation(
@@ -129,20 +71,10 @@ async function runValidation(
 }
 
 export async function runPipeline(
-  db: AsyncDuckDB,
   conn: AsyncDuckDBConnection,
   distance: number,
   onProgress: ProgressFn,
-  onCleanComplete?: (ran: boolean) => void,
 ): Promise<PipelineResult> {
-  // Optional pre-stage: detect overlaps/gaps and run mapshaper -clean in a
-  // Worker if needed. Reported under stage 1 (Load) so clean inputs show
-  // no extra step. See pipeline/clean.ts for the detection thresholds.
-  const cleanRan = await stageClean(db, conn, (label) => onProgress(1, label));
-  // Surface this even on the failure path so callers can offer the cleaned
-  // layer_01 as a download when a later stage throws.
-  onCleanComplete?.(cleanRan);
-
   // Stage 2: lines (single attempt; _02a/_02b are stable across retries)
   onProgress(2, "Extracting boundary lines");
   await stageLines(conn);
@@ -226,7 +158,7 @@ export async function runPipeline(
     // bounds stays null
   }
 
-  const geojson = await buildJoinedGeoJSON(conn, "layer_05");
+  const geojson = await tableToGeoJSON(conn, "layer_05", "layer_attr");
 
   return { geojson, bounds };
 }
