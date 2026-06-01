@@ -14,6 +14,12 @@ import { degSqToM2, degToM, metersToDegrees } from "./units";
 // the two boundaries fail to meet), rendered as a line. We only buffer the edges
 // transiently to cluster them — the gap+overlap pair of one near-miss merges into
 // a single sliver — then take the real edges back via intersection.
+//
+// The coverage validator also flags the boundaries of genuine OVERLAP areas as
+// invalid edges. Those are already surfaced as overlap issues, so we subtract the
+// overlap regions from the sliver lines to avoid duplicating every overlap as a
+// sliver. Real near-miss slivers are open gaps, so they don't lie inside an
+// overlap polygon and survive the subtraction.
 const SLIVER_NEARMISS_TOL_M = 10; // coverage-validator tolerance: flag gaps narrower than this
 const SLIVER_CLUSTER_RADIUS_M = 10; // merge invalid edges within ~this into one sliver (the gap+overlap pair)
 
@@ -90,7 +96,18 @@ async function buildSliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
       -- cluster the edges (overlapping buffers group the gap+overlap pair),
       -- but keep the ACTUAL edge lines via intersection with each cluster
       clusters AS (SELECT e, (UNNEST(ST_Dump(bg))).geom AS blob FROM buf),
-      lines AS (SELECT ST_Intersection(e, blob) AS geom FROM clusters)
+      -- already-detected overlap areas (slightly buffered) — invalid edges that
+      -- merely trace these are overlap duplicates, so erase them from the slivers
+      ov AS (
+        SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
+        FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      ),
+      lines AS (
+        SELECT CASE WHEN ov.g IS NOT NULL
+                    THEN ST_Difference(ST_Intersection(c.e, c.blob), ov.g)
+                    ELSE ST_Intersection(c.e, c.blob) END AS geom
+        FROM clusters c LEFT JOIN ov ON TRUE
+      )
       SELECT
         ROW_NUMBER() OVER (ORDER BY ST_Length(geom) DESC) AS n,
         geom,
