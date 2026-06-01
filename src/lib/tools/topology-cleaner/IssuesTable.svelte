@@ -22,7 +22,9 @@
   const gapCount = $derived(rows.filter((r) => r.kind === "gap").length);
   const overlapCount = $derived(rows.filter((r) => r.kind === "overlap").length);
   const sliverCount = $derived(rows.filter((r) => r.kind === "sliver").length);
-  const fixableCount = $derived(rows.filter((r) => r.kind !== "sliver").length);
+  // Every issue is a fix candidate now: overlaps and slivers are always closed by
+  // ST_CoverageClean, gaps are closed when within the gap-width.
+  const fixableCount = $derived(rows.length);
   const fixedCount = $derived(rows.filter((r) => fixedKeys.has(r.key)).length);
   const visible = $derived(
     rows.filter((r) => {
