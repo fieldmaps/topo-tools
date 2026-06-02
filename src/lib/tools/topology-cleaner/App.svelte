@@ -327,7 +327,7 @@
       </section>
 
       <section class="tc-step">
-        <h2 class="tc-step-heading">Sliver tolerance</h2>
+        <h2 class="tc-step-heading">Sliver detection</h2>
         <label class="tc-slider">
           <span>Near-miss up to — {sliverTolM === 0 ? "off" : fmtGap(sliverTolM)}</span>
           <input
@@ -340,9 +340,10 @@
             disabled={running}
           />
           <p class="tc-hint">
-            Thin slits where two units' boundaries should meet at a T-junction but the coordinates
-            miss by less than this. The same distance is used to snap them shut when cleaning, so
-            anything flagged is closed. Set to <strong>off</strong> to ignore slivers.
+            Flags thin slits where two units' boundaries should meet at a T-junction but the
+            coordinates miss by less than this — listed for review, <strong>not</strong> auto-fixed
+            (closing them would require snapping, which alters surrounding geometry). Set to
+            <strong>off</strong> to ignore slivers.
           </p>
         </label>
       </section>

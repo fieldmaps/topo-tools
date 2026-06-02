@@ -26,8 +26,8 @@ export class PipelineError extends Error {
 
 export interface CleanOptions {
   gapWidthM: number; // primary slider, meters (0 = no gap filling)
-  sliverTolM: number; // unified "Sliver tolerance" slider, meters: detection cutoff
-  // AND the ST_CoverageClean snap distance that closes the slivers (0 = no slivers)
+  sliverTolM: number; // "Sliver tolerance" slider, meters: DETECTION cutoff only
+  // (ST_CoverageInvalidEdges). The clean never snaps, so this does not affect the fix.
 }
 
 export interface CleanResult {
@@ -92,15 +92,18 @@ async function computeBounds(
   return null;
 }
 
-// Re-clean at the current slider values. The sliver tolerance is the unified knob:
-// it re-detects slivers (cheap — ST_CoverageInvalidEdges) AND is the snap distance
-// passed to ST_CoverageClean, so anything flagged is closed at the same tolerance.
-// Gap + overlap regions are static (built once per load) and are NOT recomputed.
+// Re-clean at the current slider values. The clean uses snap=0 deliberately:
+// ST_CoverageClean's snapping re-nodes the WHOLE coverage (collateral changes far
+// from any issue), and snapping is the only thing that closes near-miss slivers —
+// so we don't snap. The clean fixes overlaps + fills gaps (snap=0 touches only the
+// genuinely-broken polygons); slivers are DETECTION-ONLY (the sliver-tolerance
+// slider drives ST_CoverageInvalidEdges, not the fix). Gap + overlap regions are
+// static (built once per load) and are NOT recomputed.
 export async function recleanOnly(
   conn: AsyncDuckDBConnection,
   opts: CleanOptions,
 ): Promise<RecleanResult> {
-  const snapDeg = metersToDegrees(opts.sliverTolM);
+  const snapDeg = 0; // never snap — see note above (slivers are detection-only)
   const gapDeg = metersToDegrees(opts.gapWidthM);
 
   // Re-detect slivers at the new tolerance and rebuild the issues table first, so
@@ -112,6 +115,7 @@ export async function recleanOnly(
 
   const kept = await countRows(conn, "tc_clean");
   const fixedKeys = await checkFixedIssues(conn, cachedIssues);
+
   return {
     cleanedGeoJSON: await tableToGeoJSON(conn, "tc_clean", "layer_attr"),
     collapsedCount: Math.max(0, totalCount - kept),

@@ -260,19 +260,17 @@ async function assembleIssues(conn: AsyncDuckDBConnection): Promise<IssuesResult
 }
 
 // Check which issues are resolved in the current cleaned output (tc_clean).
-// Overlaps are always fixed by ST_CoverageClean. Slivers are fixed by definition:
-// they are detected at the sliver tolerance and ST_CoverageClean snaps at that
-// same tolerance, so every detected sliver is closed by the same clean. For gaps,
-// we test whether a representative interior point of the gap polygon is now
-// covered by any cleaned polygon — if so, the gap has been merged into a neighbour.
+// Overlaps are always fixed by ST_CoverageClean. Slivers are DETECTION-ONLY (the
+// clean never snaps, so near-miss slivers are not auto-closed) — they are never
+// marked fixed. For gaps, we test whether a representative interior point of the
+// gap polygon is now covered by any cleaned polygon — if so, the gap has been
+// merged into a neighbour.
 export async function checkFixedIssues(
   conn: AsyncDuckDBConnection,
   rows: IssueRow[],
 ): Promise<Set<string>> {
   const fixed = new Set<string>();
-  rows
-    .filter((r) => r.kind === "overlap" || r.kind === "sliver")
-    .forEach((r) => fixed.add(r.key));
+  rows.filter((r) => r.kind === "overlap").forEach((r) => fixed.add(r.key));
 
   const hasGaps = rows.some((r) => r.kind === "gap");
   if (!hasGaps) return fixed;

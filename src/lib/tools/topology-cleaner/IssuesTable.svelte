@@ -22,10 +22,11 @@
   const gapCount = $derived(rows.filter((r) => r.kind === "gap").length);
   const overlapCount = $derived(rows.filter((r) => r.kind === "overlap").length);
   const sliverCount = $derived(rows.filter((r) => r.kind === "sliver").length);
-  // Every issue is a fix candidate now: overlaps and slivers are always closed by
-  // ST_CoverageClean, gaps are closed when within the gap-width.
-  const fixableCount = $derived(rows.length);
-  const fixedCount = $derived(rows.filter((r) => fixedKeys.has(r.key)).length);
+  // Only overlaps + gaps are auto-fixed (overlaps always, gaps within the gap-width).
+  // Slivers are detection-only (the clean never snaps) — they don't count as fixed.
+  const isFixable = (r: IssueRow) => r.kind === "overlap" || r.kind === "gap";
+  const fixableCount = $derived(rows.filter(isFixable).length);
+  const fixedCount = $derived(rows.filter((r) => isFixable(r) && fixedKeys.has(r.key)).length);
   const visible = $derived(
     rows.filter((r) => {
       if (r.kind === "gap") return showGaps;
@@ -62,7 +63,7 @@
   }
 
   function isFixed(r: IssueRow): boolean {
-    return fixedKeys.has(r.key);
+    return isFixable(r) && fixedKeys.has(r.key);
   }
 </script>
 
@@ -123,9 +124,13 @@
               onmouseenter={() => onHover?.(r.key)}
             >
               <td class="tc-check-cell">
-                <span class="tc-checkbox" class:tc-checkbox--on={isFixed(r)}>
-                  {#if isFixed(r)}✓{/if}
-                </span>
+                {#if r.kind === "sliver"}
+                  <span class="tc-detect-mark" title="Detection only — not auto-fixed (closing a sliver needs snapping)">–</span>
+                {:else}
+                  <span class="tc-checkbox" class:tc-checkbox--on={isFixed(r)}>
+                    {#if isFixed(r)}✓{/if}
+                  </span>
+                {/if}
               </td>
               <td>
                 <span class="tc-key {kindClass(r)}"></span>
@@ -250,6 +255,15 @@
   }
   .tc-key--sliver {
     background: #7c3aed;
+  }
+  .tc-detect-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    font-size: 13px;
+    color: #9ca3af;
   }
   .tc-check-cell {
     text-align: center;
