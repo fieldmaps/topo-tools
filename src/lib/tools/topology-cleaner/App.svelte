@@ -360,6 +360,12 @@
             <span>{i + 1 === currentStage && stageLabel ? stageLabel : label}</span>
           </li>
         {/each}
+        {#if recleaning}
+          <li class="active" role="status" aria-live="polite">
+            <span class="tc-spinner" aria-hidden="true"></span>
+            <span>Updating…</span>
+          </li>
+        {/if}
       </ol>
     {/if}
 
@@ -386,12 +392,6 @@
 
   <div class="tc-result">
     <div class="tc-map-pane">
-      {#if running || recleaning}
-        <div class="tc-busy" role="status" aria-live="polite">
-          <span class="tc-busy-spinner" aria-hidden="true"></span>
-          {running ? "Processing layer…" : "Updating…"}
-        </div>
-      {/if}
       {#if cleanedGeoJSON}
         <div class="tc-view-toolbar">
           <div class="tc-mode-btns" role="group" aria-label="View mode">
@@ -605,27 +605,10 @@
       border-bottom: none;
     }
   }
-  .tc-busy {
-    position: absolute;
-    top: 0.5rem;
-    left: 0.5rem;
-    z-index: 11;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.6rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #1d4ed8;
-    background: #fff;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  }
-  .tc-busy-spinner {
-    width: 12px;
-    height: 12px;
-    border: 2px solid #bfdbfe;
+  .tc-spinner {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid #bfdbfe;
     border-top-color: #1d4ed8;
     border-radius: 50%;
     animation: tc-spin 0.7s linear infinite;
