@@ -15,21 +15,33 @@
     originalGeojson = null,
     cleanedGeojson = null,
     issuesGeojson = null,
+    sliverVerticesGeojson = null,
+    selectMode = false,
+    selectionBbox = null,
     bounds = null,
     focusBbox = null,
     selectedKey = null,
     showSide = "b" as "a" | "b",
     onIssueClick,
+    onBoxSelect,
   }: {
     originalGeojson?: string | null;
     cleanedGeojson?: string | null;
     issuesGeojson?: string | null;
+    sliverVerticesGeojson?: string | null;
+    selectMode?: boolean;
+    selectionBbox?: [number, number, number, number] | null;
     bounds?: [number, number, number, number] | null;
     focusBbox?: [number, number, number, number] | null;
     selectedKey?: string | null;
     showSide?: "a" | "b";
     onIssueClick?: (key: string | null) => void;
+    onBoxSelect?: (bbox: [number, number, number, number]) => void;
   } = $props();
+
+  const EMPTY_FC = '{"type":"FeatureCollection","features":[]}';
+  const VERTEX = "#2563eb"; // selectable sliver-vertex dots (blue)
+  const VERTEX_SELECTED = "#dc2626"; // dots inside the current selection box (red)
 
   const ORIGINAL_FILL = "#8dc65a"; // green
   const CLEANED_FILL = "#aad4e0"; // blue
@@ -169,6 +181,64 @@
     }
   });
 
+  // Selectable sliver-adjacent vertices, shown as dots while in select mode.
+  $effect(() => {
+    const data = sliverVerticesGeojson ?? EMPTY_FC;
+    if (upsertSource("tc-vertices", data)) {
+      map!.addLayer({
+        id: "tc-vertices",
+        type: "circle",
+        source: "tc-vertices",
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": 4,
+          "circle-color": VERTEX,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#fff",
+        },
+      });
+      applySideVisibility(showSide);
+    }
+  });
+
+  // Persistent outline of the current selection box (after a drag, before Snap).
+  $effect(() => {
+    const b = selectionBbox;
+    const fc = b
+      ? JSON.stringify({
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "Polygon",
+                coordinates: [
+                  [
+                    [b[0], b[1]],
+                    [b[2], b[1]],
+                    [b[2], b[3]],
+                    [b[0], b[3]],
+                    [b[0], b[1]],
+                  ],
+                ],
+              },
+            },
+          ],
+        })
+      : EMPTY_FC;
+    if (upsertSource("tc-selbox", fc)) {
+      map!.addLayer({
+        id: "tc-selbox",
+        type: "line",
+        source: "tc-selbox",
+        layout: { visibility: "none" },
+        paint: { "line-color": VERTEX_SELECTED, "line-width": 1.5, "line-dasharray": [2, 1] },
+      });
+      applySideVisibility(showSide);
+    }
+  });
+
   // Highlight the selected issue.
   $effect(() => {
     const key = selectedKey;
@@ -195,16 +265,71 @@
     vis("tc-issues-outline", isA);
     vis("tc-issues-sliver", isA);
     vis("tc-issues-highlight", isA);
+    vis("tc-vertices", isA && selectMode);
+    vis("tc-selbox", isA && selectMode);
     vis("tc-cleaned-fill", !isA);
     vis("tc-cleaned-line", !isA);
   }
 
   $effect(() => {
     const side = showSide;
+    void selectMode; // re-apply visibility when select mode toggles
     if (!map || !styleReady) return;
     if (sidePending !== undefined) cancelAnimationFrame(sidePending);
     sidePending = requestAnimationFrame(() => applySideVisibility(side));
   });
+
+  // Rubber-band box select (select mode): drag a rectangle; on release, report its
+  // geographic bbox. Drag-pan is suspended while a box is being drawn.
+  let boxEl: HTMLDivElement | undefined;
+  let dragStart: { x: number; y: number } | undefined;
+
+  function onDown(e: MapMouseEvent): void {
+    if (!selectMode || !map || !container) return;
+    const oe = e.originalEvent as MouseEvent;
+    if (oe.button !== 0) return;
+    map.dragPan.disable();
+    dragStart = { x: oe.clientX, y: oe.clientY };
+    boxEl = document.createElement("div");
+    boxEl.className = "tc-selbox-live";
+    container.appendChild(boxEl);
+  }
+
+  function onMove(e: MapMouseEvent): void {
+    if (!dragStart || !boxEl) return;
+    const oe = e.originalEvent as MouseEvent;
+    const rect = container!.getBoundingClientRect();
+    const x = Math.min(dragStart.x, oe.clientX) - rect.left;
+    const y = Math.min(dragStart.y, oe.clientY) - rect.top;
+    boxEl.style.left = `${x}px`;
+    boxEl.style.top = `${y}px`;
+    boxEl.style.width = `${Math.abs(oe.clientX - dragStart.x)}px`;
+    boxEl.style.height = `${Math.abs(oe.clientY - dragStart.y)}px`;
+  }
+
+  function onUp(e: MapMouseEvent): void {
+    if (!dragStart || !map) return;
+    const oe = e.originalEvent as MouseEvent;
+    const start = dragStart;
+    dragStart = undefined;
+    if (boxEl) {
+      boxEl.remove();
+      boxEl = undefined;
+    }
+    map.dragPan.enable();
+    const rect = container!.getBoundingClientRect();
+    const p0 = { x: start.x - rect.left, y: start.y - rect.top };
+    const p1 = { x: oe.clientX - rect.left, y: oe.clientY - rect.top };
+    if (Math.abs(p1.x - p0.x) < 3 && Math.abs(p1.y - p0.y) < 3) return; // a click, not a drag
+    const a = map.unproject([p0.x, p0.y]);
+    const b = map.unproject([p1.x, p1.y]);
+    onBoxSelect?.([
+      Math.min(a.lng, b.lng),
+      Math.min(a.lat, b.lat),
+      Math.max(a.lng, b.lng),
+      Math.max(a.lat, b.lat),
+    ]);
+  }
 
   // Initial fit to the whole coverage. fitBounds is called directly (not gated on
   // isStyleLoaded) because adding GeoJSON sources flips isStyleLoaded() false and
@@ -273,6 +398,9 @@
       map?.on("touchstart", stopSpin);
       map?.on("wheel", stopSpin);
       map?.on("click", handleMapClick);
+      map?.on("mousedown", onDown);
+      map?.on("mousemove", onMove);
+      map?.on("mouseup", onUp);
     });
   });
 
@@ -283,12 +411,22 @@
   });
 </script>
 
-<div bind:this={container} class="tc-map"></div>
+<div bind:this={container} class="tc-map" class:tc-selecting={selectMode}></div>
 
 <style>
   .tc-map {
     width: 100%;
     height: 100%;
     min-height: 400px;
+  }
+  .tc-map.tc-selecting :global(.maplibregl-canvas) {
+    cursor: crosshair;
+  }
+  .tc-map :global(.tc-selbox-live) {
+    position: absolute;
+    border: 1.5px dashed #dc2626;
+    background: rgba(220, 38, 38, 0.1);
+    pointer-events: none;
+    z-index: 5;
   }
 </style>

@@ -1,6 +1,7 @@
 import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { tableToGeoJSON } from "$lib/db/geojson";
 import { buildClean, buildInput, buildReducedInput, countRows } from "./clean";
+import { deleteVerticesInBox, snapVerticesInBox, type PinchResult } from "./close";
 import {
   buildGapRegions,
   buildOverlapRegions,
@@ -170,4 +171,157 @@ export async function runFromLoaded(
     collapsedCount: reclean.collapsedCount,
     fixedKeys: reclean.fixedKeys,
   };
+}
+
+// ── Sliver fixing by mouth pinch ─────────────────────────────────────────────
+//
+// The user box-selects a sliver's open mouth and snaps those vertices together
+// (snapVerticesInBox), which encloses the thin crack into a gap. That mutates the
+// working coverage (layer_01), so we rebuild EVERYTHING downstream — the frozen
+// input, the gap + overlap regions (now stale), then re-detect slivers and re-clean.
+// The re-clean's gap-fill absorbs the freshly-enclosed gap. Reversibility is a stack
+// of layer_01 snapshots (DuckDB tables); undo restores the most recent and re-derives.
+
+const undoStack: string[] = [];
+let undoCounter = 0;
+const MAX_UNDO = 20;
+
+export interface PinchOutcome {
+  ok: boolean;
+  reason?: string;
+  movedVertices?: number;
+  // Present when ok: the refreshed results (the input changed, so originalGeoJSON too).
+  result?: RecleanResult & { originalGeoJSON: string };
+}
+
+// Full re-derive from the current (possibly edited) layer_01.
+async function deriveAll(conn: AsyncDuckDBConnection, opts: CleanOptions): Promise<RecleanResult> {
+  totalCount = await buildInput(conn);
+  await buildGapRegions(conn);
+  await buildOverlapRegions(conn);
+  return recleanOnly(conn, opts);
+}
+
+async function refreshedResult(
+  conn: AsyncDuckDBConnection,
+  opts: CleanOptions,
+): Promise<RecleanResult & { originalGeoJSON: string }> {
+  const reclean = await deriveAll(conn, opts);
+  const originalGeoJSON = await tableToGeoJSON(conn, "layer_01", null);
+  return { ...reclean, originalGeoJSON };
+}
+
+// Shared skeleton for snap and delete: snapshot layer_01, run the vertex operation,
+// validate, push to the undo stack, then re-derive. A failed or no-op edit discards
+// the snapshot and is returned as {ok:false} without dirtying the undo stack.
+async function applyVertexEdit(
+  conn: AsyncDuckDBConnection,
+  bbox: [number, number, number, number],
+  opts: CleanOptions,
+  op: (conn: AsyncDuckDBConnection, bbox: [number, number, number, number]) => Promise<PinchResult>,
+): Promise<PinchOutcome> {
+  const snap = `tc_undo_${undoCounter++}`;
+  await conn.query(`CREATE OR REPLACE TABLE ${snap} AS SELECT * FROM layer_01`);
+
+  let res: PinchResult;
+  try {
+    res = await op(conn, bbox);
+  } catch (e) {
+    res = { ok: false, reason: e instanceof Error ? e.message : String(e), movedVertices: 0 };
+  }
+  if (!res.ok) {
+    await conn.query(`DROP TABLE IF EXISTS ${snap}`);
+    return { ok: false, reason: res.reason };
+  }
+
+  undoStack.push(snap);
+  while (undoStack.length > MAX_UNDO) {
+    await conn.query(`DROP TABLE IF EXISTS ${undoStack.shift()}`);
+  }
+  return { ok: true, result: await refreshedResult(conn, opts) };
+}
+
+// Pinch the vertices inside `bbox` together (snap to their centroid), closing a
+// sliver mouth, then re-derive so the existing gap-fill can absorb the resulting gap.
+export async function applyPinch(
+  conn: AsyncDuckDBConnection,
+  bbox: [number, number, number, number],
+  opts: CleanOptions,
+): Promise<PinchOutcome> {
+  return applyVertexEdit(conn, bbox, opts, snapVerticesInBox);
+}
+
+// Delete the vertices inside `bbox`, rebuilding affected polygons without them,
+// then re-derive. Useful for removing stray/spurious vertices.
+export async function applyDelete(
+  conn: AsyncDuckDBConnection,
+  bbox: [number, number, number, number],
+  opts: CleanOptions,
+): Promise<PinchOutcome> {
+  return applyVertexEdit(conn, bbox, opts, deleteVerticesInBox);
+}
+
+// Restore the most recent pre-edit snapshot and re-derive. Null when nothing to undo.
+export async function undoEdit(
+  conn: AsyncDuckDBConnection,
+  opts: CleanOptions,
+): Promise<(RecleanResult & { originalGeoJSON: string }) | null> {
+  const snap = undoStack.pop();
+  if (!snap) return null;
+  await conn.query(`CREATE OR REPLACE TABLE layer_01 AS SELECT * FROM ${snap}`);
+  await conn.query(`DROP TABLE IF EXISTS ${snap}`);
+  return refreshedResult(conn, opts);
+}
+
+export function canUndoEdit(): boolean {
+  return undoStack.length > 0;
+}
+
+// Polygon vertices lying near a detected sliver edge, as a GeoJSON point collection.
+// These are the selectable "snap targets" the map shows so the user can box a mouth.
+export async function sliverVerticesGeoJSON(
+  conn: AsyncDuckDBConnection,
+  tolM: number,
+): Promise<string> {
+  // Show vertices within a few tolerances of a sliver edge (the mouth vertices sit
+  // right on the near-miss boundaries).
+  const d = metersToDegrees(Math.max(tolM, 1) * 4).toExponential();
+  let rows: Array<{ _geom: string }> = [];
+  try {
+    const r = await conn.query(`--sql
+      WITH slu AS (
+        SELECT ST_Union_Agg(geom) AS g FROM tc_sliver_regions
+        WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      ),
+      nearpoly AS (
+        SELECT geom FROM layer_01
+        WHERE (SELECT g FROM slu) IS NOT NULL AND ST_DWithin(geom, (SELECT g FROM slu), ${d})
+      ),
+      rings AS (
+        SELECT ST_ExteriorRing((d2).geom) AS ring
+        FROM (SELECT UNNEST(ST_Dump(geom)) AS d2 FROM nearpoly)
+      ),
+      verts AS (
+        SELECT UNNEST(list_transform(
+          generate_series(1, ST_NPoints(ring)), i -> ST_PointN(ring, i::INTEGER)
+        )) AS p FROM rings
+      )
+      SELECT DISTINCT ST_AsGeoJSON(p) AS _geom
+      FROM verts WHERE ST_DWithin(p, (SELECT g FROM slu), ${d})
+    `);
+    rows = r.toArray() as Array<{ _geom: string }>;
+  } catch {
+    rows = [];
+  }
+  const features = rows.map((r) => ({
+    type: "Feature",
+    geometry: JSON.parse(r._geom),
+    properties: {},
+  }));
+  return JSON.stringify({ type: "FeatureCollection", features });
+}
+
+// Drop all undo snapshots (call on new file load).
+export async function resetEditUndo(conn: AsyncDuckDBConnection): Promise<void> {
+  for (const s of undoStack.splice(0)) await conn.query(`DROP TABLE IF EXISTS ${s}`);
 }

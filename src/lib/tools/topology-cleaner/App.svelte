@@ -6,7 +6,18 @@
   import { onMount, untrack } from "svelte";
   import IssuesTable from "./IssuesTable.svelte";
   import MapView from "./MapView.svelte";
-  import { PipelineError, recleanOnly, runFromLoaded, type IssueRow } from "./pipeline";
+  import {
+    applyDelete,
+    applyPinch,
+    canUndoEdit,
+    PipelineError,
+    recleanOnly,
+    resetEditUndo,
+    runFromLoaded,
+    sliverVerticesGeoJSON as fetchSliverVertices,
+    undoEdit,
+    type IssueRow,
+  } from "./pipeline";
 
   const STAGE_LABELS = [
     "Load file",
@@ -25,7 +36,7 @@
   // near-miss tolerance: it both detects slivers and is the ST_CoverageClean snap
   // distance that closes them (0 → slivers off, no snapping).
   let gapWidthM = $state(0);
-  const SLIVER_TOL_DEFAULT_M = 1;
+  const SLIVER_TOL_DEFAULT_M = 10;
   const SLIVER_TOL_MAX_M = 50;
   let sliverTolM = $state(SLIVER_TOL_DEFAULT_M);
 
@@ -82,6 +93,7 @@
   let issuesGeoJSON = $state<string | null>(null);
   let issues = $state<IssueRow[]>([]);
   let fixedKeys = $state<Set<string>>(new Set());
+  let noResolutionSlivers = $state<Set<string>>(new Set());
   let bounds = $state<[number, number, number, number] | null>(null);
   let totalCount = $state(0);
   let collapsedCount = $state(0);
@@ -90,6 +102,49 @@
   let showSide = $state<"a" | "b">("b");
   let selectedKey = $state<string | null>(null);
   let focusBbox = $state<[number, number, number, number] | null>(null);
+
+  // Sliver fixing (mouth pinch via box-select + snap)
+  let selectMode = $state(false);
+  let selectionBbox = $state<[number, number, number, number] | null>(null);
+  let sliverVerticesGeoJSON = $state<string | null>(null);
+  let editing = $state(false);
+  let editNote = $state<string | null>(null);
+  let undoAvailable = $state(false);
+
+  // Number of selectable vertices currently inside the selection box (for the button
+  // label). Computed client-side from the rendered vertex points.
+  const selectedVertexCount = $derived.by(() => {
+    const b = selectionBbox;
+    if (!b || !sliverVerticesGeoJSON) return 0;
+    try {
+      const fc = JSON.parse(sliverVerticesGeoJSON) as {
+        features: { geometry: { coordinates: [number, number] } }[];
+      };
+      return fc.features.filter((f) => {
+        const [x, y] = f.geometry.coordinates;
+        return x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
+      }).length;
+    } catch {
+      return 0;
+    }
+  });
+
+  // Load the sliver-adjacent vertices (snap targets) whenever select mode is on and
+  // there's a result; clear otherwise.
+  $effect(() => {
+    const on = selectMode;
+    const tol = sliverTolM;
+    const haveResult = cleanedGeoJSON != null;
+    untrack(() => {
+      if (!on || !haveResult || !duckdbState.conn) {
+        sliverVerticesGeoJSON = null;
+        return;
+      }
+      fetchSliverVertices(duckdbState.conn, tol)
+        .then((gj) => (sliverVerticesGeoJSON = gj))
+        .catch(() => (sliverVerticesGeoJSON = null));
+    });
+  });
 
   // Debounce for slider-driven re-clean.
   let recleanTimer: ReturnType<typeof setTimeout> | undefined;
@@ -102,6 +157,10 @@
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
     if (e.key === "]" || e.key === "[") {
       showSide = showSide === "a" ? "b" : "a";
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && undoAvailable) {
+      e.preventDefault();
+      void undoFix();
     }
   }
 
@@ -137,6 +196,7 @@
     issuesGeoJSON = null;
     issues = [];
     fixedKeys = new Set();
+    noResolutionSlivers = new Set();
     bounds = null;
     totalCount = 0;
     collapsedCount = 0;
@@ -148,6 +208,13 @@
     showSide = "b";
     selectedKey = null;
     focusBbox = null;
+    selectMode = false;
+    selectionBbox = null;
+    sliverVerticesGeoJSON = null;
+    editing = false;
+    editNote = null;
+    undoAvailable = false;
+    if (duckdbState.conn) void resetEditUndo(duckdbState.conn);
     gapWidthM = 0;
     sliverTolM = SLIVER_TOL_DEFAULT_M;
     recleanPending = false;
@@ -240,6 +307,117 @@
     }
   }
 
+  // Apply a refreshed re-derive (after a transplant or undo) to the view state.
+  function applyRefreshed(r: {
+    cleanedGeoJSON: string;
+    issuesGeoJSON: string;
+    issues: IssueRow[];
+    fixedKeys: Set<string>;
+    collapsedCount: number;
+    originalGeoJSON: string;
+  }): void {
+    cleanedGeoJSON = r.cleanedGeoJSON;
+    issuesGeoJSON = r.issuesGeoJSON;
+    issues = r.issues;
+    fixedKeys = r.fixedKeys;
+    collapsedCount = r.collapsedCount;
+    originalGeoJSON = r.originalGeoJSON;
+  }
+
+  function toggleSelectMode(): void {
+    selectMode = !selectMode;
+    selectionBbox = null;
+    editNote = null;
+    if (selectMode) showSide = "a"; // edits/vertices are shown over the original
+  }
+
+  function onBoxSelect(bbox: [number, number, number, number]): void {
+    selectionBbox = bbox;
+    editNote = null;
+  }
+
+  // Snap the boxed vertices together (pinch the mouth), then re-derive so gap-fill
+  // absorbs the resulting gap.
+  async function snapSelected(): Promise<void> {
+    if (!selectionBbox || editing) return;
+    editing = true;
+    editNote = null;
+    try {
+      const outcome = await applyPinch(duckdbState.conn!, selectionBbox, { gapWidthM, sliverTolM });
+      if (!outcome.ok || !outcome.result) {
+        editNote =
+          outcome.reason === "no vertices in the selection"
+            ? "No vertices in that box — drag around a sliver's open end."
+            : `Couldn't snap${outcome.reason ? ` (${outcome.reason})` : ""}.`;
+        return;
+      }
+      applyRefreshed(outcome.result);
+      undoAvailable = canUndoEdit();
+      selectionBbox = null;
+      selectedKey = null;
+      // Refresh the snap-target dots against the updated coverage.
+      if (duckdbState.conn) {
+        fetchSliverVertices(duckdbState.conn, sliverTolM)
+          .then((gj) => (sliverVerticesGeoJSON = gj))
+          .catch(() => {});
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      editing = false;
+    }
+  }
+
+  async function deleteSelected(): Promise<void> {
+    if (!selectionBbox || editing) return;
+    editing = true;
+    editNote = null;
+    try {
+      const outcome = await applyDelete(duckdbState.conn!, selectionBbox, { gapWidthM, sliverTolM });
+      if (!outcome.ok || !outcome.result) {
+        editNote =
+          outcome.reason === "no vertices in the selection"
+            ? "No vertices in that box — drag around the vertices to delete."
+            : `Couldn't delete${outcome.reason ? ` (${outcome.reason})` : ""}.`;
+        return;
+      }
+      applyRefreshed(outcome.result);
+      undoAvailable = canUndoEdit();
+      selectionBbox = null;
+      selectedKey = null;
+      if (duckdbState.conn) {
+        fetchSliverVertices(duckdbState.conn, sliverTolM)
+          .then((gj) => (sliverVerticesGeoJSON = gj))
+          .catch(() => {});
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      editing = false;
+    }
+  }
+
+  async function undoFix(): Promise<void> {
+    if (editing || !undoAvailable) return;
+    editing = true;
+    editNote = null;
+    try {
+      const r = await undoEdit(duckdbState.conn!, { gapWidthM, sliverTolM });
+      if (r) applyRefreshed(r);
+      undoAvailable = canUndoEdit();
+      selectionBbox = null;
+      if (selectMode && duckdbState.conn) {
+        fetchSliverVertices(duckdbState.conn, sliverTolM)
+          .then((gj) => (sliverVerticesGeoJSON = gj))
+          .catch(() => {});
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      editing = false;
+    }
+  }
+
   // Selecting an issue (from table or map) highlights it, switches to Version A
   // so the highlight is visible over the original coverage, and zooms to it.
   function selectIssue(key: string): void {
@@ -248,6 +426,12 @@
     selectedKey = key;
     showSide = "a";
     focusBbox = row.bbox.slice() as [number, number, number, number]; // fresh array → always re-zooms
+  }
+
+  function toggleSliverNoResolution(key: string): void {
+    const nr = new Set(noResolutionSlivers);
+    if (!nr.delete(key)) nr.add(key);
+    noResolutionSlivers = nr;
   }
 
   function onMapIssueClick(key: string | null): void {
@@ -283,10 +467,9 @@
       <a class="tc-back" href="/">← Topology Tools</a>
       <h1>Topology Cleaner</h1>
       <p class="tc-blurb">
-        Fix overlaps and gaps in a polygon coverage. Drop a layer; the tool lists every overlap and
-        gap (click one to zoom to it), then cleans the topology with DuckDB's
-        <code>ST_CoverageClean</code>. Compare the Original with the Fixed result, and widen the
-        gap slider to close gaps too large to fix automatically.
+        Drop a polygon layer to detect and fix overlaps, gaps, and slivers. Click any issue to zoom
+        to it, adjust the gap width to control how much gets filled, and use Edit mode to manually
+        fix slivers.
       </p>
     </header>
 
@@ -295,7 +478,7 @@
     {/if}
 
     <section class="tc-step">
-      <h2 class="tc-step-heading">Drop a coverage</h2>
+      <h2 class="tc-step-heading">Drop a polygon layer</h2>
       <DropZone
         bind:files
         disabled={running || loading}
@@ -320,8 +503,7 @@
             disabled={running}
           />
           <p class="tc-hint">
-            Enclosed gaps narrower than this are merged into a neighbour. Raise it to close gaps too
-            large to clean automatically.
+            Fill enclosed gaps up to this width. Raise to close larger gaps.
           </p>
         </label>
       </section>
@@ -340,12 +522,42 @@
             disabled={running}
           />
           <p class="tc-hint">
-            Flags thin slits where two units' boundaries should meet at a T-junction but the
-            coordinates miss by less than this — listed for review, <strong>not</strong> auto-fixed
-            (closing them would require snapping, which alters surrounding geometry). Set to
-            <strong>off</strong> to ignore slivers.
+            Detect thin near-miss cracks narrower than this. Use <strong>Edit mode</strong> below to
+            fix or remove them. Set to <strong>off</strong> to skip detection.
           </p>
         </label>
+      </section>
+
+      <section class="tc-step tc-step--no-border">
+        <button class="tc-mode-toggle" class:active={selectMode} onclick={toggleSelectMode}>
+          {selectMode ? "✓ Edit mode on" : "Edit mode"}
+        </button>
+        {#if selectMode}
+          <p class="tc-hint">
+            The blue dots are vertices near slivers. <strong>Drag a box</strong> to select
+            vertices, then <strong>Snap</strong> them together (closes the crack into a gap) or
+            <strong>Delete</strong> them.
+          </p>
+          <p class="tc-vert-count">
+            {#if editing}Working…{:else}{selectedVertexCount} {selectedVertexCount === 1 ? "vertex" : "vertices"} selected{/if}
+          </p>
+          <div class="tc-edit-btns">
+            <button
+              class="tc-snap-btn"
+              disabled={editing || selectedVertexCount === 0}
+              onclick={snapSelected}
+            >Snap</button>
+            <button
+              class="tc-delete-btn"
+              disabled={editing || selectedVertexCount === 0}
+              onclick={deleteSelected}
+            >Delete</button>
+            {#if undoAvailable}
+              <button class="tc-undo" onclick={undoFix} disabled={editing}><span class="tc-undo-arrow">↩</span> Undo</button>
+            {/if}
+          </div>
+          {#if editNote}<p class="tc-warn">{editNote}</p>{/if}
+        {/if}
       </section>
     {/if}
 
@@ -413,16 +625,27 @@
         originalGeojson={originalGeoJSON}
         cleanedGeojson={cleanedGeoJSON}
         issuesGeojson={issuesGeoJSON}
+        sliverVerticesGeojson={sliverVerticesGeoJSON}
+        {selectMode}
+        {selectionBbox}
         {bounds}
         {focusBbox}
         {selectedKey}
         {showSide}
         onIssueClick={onMapIssueClick}
+        {onBoxSelect}
       />
     </div>
     {#if cleanedGeoJSON}
       <div class="tc-table-pane">
-        <IssuesTable rows={issues} {selectedKey} {fixedKeys} onSelect={selectIssue} />
+        <IssuesTable
+          rows={issues}
+          {selectedKey}
+          {fixedKeys}
+          {noResolutionSlivers}
+          onToggleSliverNoResolution={toggleSliverNoResolution}
+          onSelect={selectIssue}
+        />
       </div>
     {/if}
   </div>
@@ -533,10 +756,15 @@
     color: #b45309;
     font-weight: 600;
   }
+  .tc-step--no-border {
+    border-top: none;
+    padding-top: 0;
+  }
   .tc-stages {
     list-style: none;
-    padding: 0;
+    padding: 0.75rem 0 0;
     margin: 0;
+    border-top: 1px solid #e5e7eb;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
@@ -611,7 +839,7 @@
     border: 1.5px solid #bfdbfe;
     border-top-color: #1d4ed8;
     border-radius: 50%;
-    animation: tc-spin 0.7s linear infinite;
+    animation: tc-spin 0.4s linear infinite;
   }
   @keyframes tc-spin {
     to {
@@ -675,5 +903,90 @@
     border-radius: 3px;
     background: #f3f4f6;
     color: #4b5563;
+  }
+  .tc-mode-toggle {
+    align-self: flex-start;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #fff;
+    color: #374151;
+    cursor: pointer;
+  }
+  .tc-mode-toggle:hover {
+    background: #f3f4f6;
+  }
+  .tc-mode-toggle.active {
+    background: #2563eb;
+    border-color: #2563eb;
+    color: #fff;
+  }
+  .tc-vert-count {
+    margin: 0 0 0.4rem;
+    font-size: 0.78rem;
+    color: #4b5563;
+  }
+  .tc-edit-btns {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .tc-snap-btn {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border-radius: 6px;
+    border: 2px solid #2563eb;
+    background: #2563eb;
+    color: #fff;
+    cursor: pointer;
+  }
+  .tc-snap-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+    background: #fff;
+    color: #9ca3af;
+    border-color: #d1d5db;
+  }
+  .tc-delete-btn {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border-radius: 6px;
+    border: 2px solid #dc2626;
+    background: #fff;
+    color: #dc2626;
+    cursor: pointer;
+  }
+  .tc-delete-btn:hover:not(:disabled) {
+    background: #fef2f2;
+  }
+  .tc-delete-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+    border-color: #d1d5db;
+    color: #9ca3af;
+  }
+  .tc-undo {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.78rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #fff;
+    color: #374151;
+    cursor: pointer;
+  }
+  .tc-undo:hover:not(:disabled) {
+    background: #f3f4f6;
+  }
+  .tc-undo:disabled {
+    opacity: 0.5;
+  }
+  .tc-undo-arrow {
+    margin-right: 0.2rem;
+    transform: translateY(1px);
   }
 </style>

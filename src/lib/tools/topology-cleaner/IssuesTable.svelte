@@ -5,14 +5,18 @@
     rows = [],
     selectedKey = null,
     fixedKeys = new Set<string>(),
+    noResolutionSlivers = new Set<string>(),
     onSelect,
     onHover,
+    onToggleSliverNoResolution,
   }: {
     rows?: IssueRow[];
     selectedKey?: string | null;
     fixedKeys?: Set<string>;
+    noResolutionSlivers?: Set<string>;
     onSelect?: (key: string) => void;
     onHover?: (key: string | null) => void;
+    onToggleSliverNoResolution?: (key: string) => void;
   } = $props();
 
   let showGaps = $state(true);
@@ -27,6 +31,9 @@
   const isFixable = (r: IssueRow) => r.kind === "overlap" || r.kind === "gap";
   const fixableCount = $derived(rows.filter(isFixable).length);
   const fixedCount = $derived(rows.filter((r) => isFixable(r) && fixedKeys.has(r.key)).length);
+  const reviewedSliverCount = $derived(
+    rows.filter((r) => r.kind === "sliver" && noResolutionSlivers.has(r.key)).length,
+  );
   const visible = $derived(
     rows.filter((r) => {
       if (r.kind === "gap") return showGaps;
@@ -69,9 +76,17 @@
 
 <div class="tc-table-wrap">
   <div class="tc-toolbar">
-    <span class="tc-fixed-count" class:all={fixedCount === fixableCount && fixableCount > 0}>
-      {fixedCount} of {fixableCount} fixed
-    </span>
+    <div class="tc-counts">
+      <span class="tc-fixed-count" class:all={fixedCount === fixableCount && fixableCount > 0}>
+        {fixedCount} of {fixableCount} fixed
+      </span>
+      {#if sliverCount > 0}
+        <span class="tc-sep">|</span>
+        <span class="tc-sliver-count" class:all={reviewedSliverCount === sliverCount}>
+          {reviewedSliverCount} of {sliverCount} slivers reviewed
+        </span>
+      {/if}
+    </div>
     <div class="tc-filters">
       <button
         type="button"
@@ -125,7 +140,12 @@
             >
               <td class="tc-check-cell">
                 {#if r.kind === "sliver"}
-                  <span class="tc-detect-mark" title="Detection only — not auto-fixed (closing a sliver needs snapping)">–</span>
+                  <button
+                    class="tc-checkbox tc-checkbox--no-fix"
+                    class:tc-checkbox--no-fix-on={noResolutionSlivers.has(r.key)}
+                    title={noResolutionSlivers.has(r.key) ? "No resolution needed (click to undo)" : "Mark as no resolution needed"}
+                    onclick={(e) => { e.stopPropagation(); onToggleSliverNoResolution?.(r.key); }}
+                  >{#if noResolutionSlivers.has(r.key)}✓{/if}</button>
                 {:else}
                   <span class="tc-checkbox" class:tc-checkbox--on={isFixed(r)}>
                     {#if isFixed(r)}✓{/if}
@@ -163,12 +183,30 @@
     border-bottom: 1px solid #e5e7eb;
     flex-wrap: wrap;
   }
+  .tc-counts {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
   .tc-fixed-count {
     font-size: 0.82rem;
     font-weight: 600;
     color: #b45309;
   }
   .tc-fixed-count.all {
+    color: #15803d;
+  }
+  .tc-sep {
+    font-size: 0.82rem;
+    color: #d1d5db;
+  }
+  .tc-sliver-count {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #6b21a8;
+  }
+  .tc-sliver-count.all {
     color: #15803d;
   }
   .tc-filters {
@@ -256,15 +294,6 @@
   .tc-key--sliver {
     background: #7c3aed;
   }
-  .tc-detect-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 15px;
-    height: 15px;
-    font-size: 13px;
-    color: #9ca3af;
-  }
   .tc-check-cell {
     text-align: center;
   }
@@ -281,6 +310,17 @@
     color: transparent;
   }
   .tc-checkbox--on {
+    background: #16a34a;
+    border-color: #16a34a;
+    color: #fff;
+  }
+  .tc-checkbox--no-fix {
+    cursor: pointer;
+  }
+  .tc-checkbox--no-fix:hover:not(.tc-checkbox--no-fix-on) {
+    border-color: #9ca3af;
+  }
+  .tc-checkbox--no-fix-on {
     background: #16a34a;
     border-color: #16a34a;
     color: #fff;

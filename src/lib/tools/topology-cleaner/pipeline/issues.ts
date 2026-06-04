@@ -99,10 +99,7 @@ async function emptySliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
 // tolM is the near-miss tolerance (the "Sliver tolerance" slider, meters): flag
 // gaps narrower than this. The edge cluster/dedup buffer reuses the same value.
 // tolM <= 0 disables sliver detection (empty table).
-export async function buildSliverRegions(
-  conn: AsyncDuckDBConnection,
-  tolM: number,
-): Promise<void> {
+export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: number): Promise<void> {
   if (!(tolM > 0)) {
     await emptySliverRegions(conn);
     return;
@@ -128,11 +125,25 @@ export async function buildSliverRegions(
         SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
         FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
       ),
+      -- already-detected gap areas (slightly buffered) — gap-bounding edges should
+      -- not surface as slivers too; this also removes sliver edges whose crack became
+      -- an enclosed gap after a mouth pinch, so the sliver disappears and the gap appears
+      gap_buf AS (
+        SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
+        FROM tc_gap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      ),
       lines AS (
-        SELECT CASE WHEN ov.g IS NOT NULL
-                    THEN ST_Difference(ST_Intersection(c.e, c.blob), ov.g)
-                    ELSE ST_Intersection(c.e, c.blob) END AS geom
-        FROM clusters c LEFT JOIN ov ON TRUE
+        SELECT
+          CASE
+            WHEN ov.g IS NOT NULL AND gap_buf.g IS NOT NULL
+              THEN ST_Difference(ST_Difference(ST_Intersection(c.e, c.blob), ov.g), gap_buf.g)
+            WHEN ov.g IS NOT NULL
+              THEN ST_Difference(ST_Intersection(c.e, c.blob), ov.g)
+            WHEN gap_buf.g IS NOT NULL
+              THEN ST_Difference(ST_Intersection(c.e, c.blob), gap_buf.g)
+            ELSE ST_Intersection(c.e, c.blob)
+          END AS geom
+        FROM clusters c LEFT JOIN ov ON TRUE LEFT JOIN gap_buf ON TRUE
       )
       SELECT
         ROW_NUMBER() OVER (ORDER BY ST_Length(geom) DESC) AS n,
