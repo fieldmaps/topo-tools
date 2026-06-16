@@ -4,15 +4,45 @@ import { UnionFind } from "../unionFind";
 export type RelClass =
   | "unchanged"
   | "modified"
+  | "relocated"
   | "merge"
   | "split"
   | "complex"
   | "created"
   | "removed";
 
+// Canonical class order + color palette — single source of truth for the
+// table toolbar, map fill expression, and legend (all three previously kept
+// their own copy of this list).
+export const REL_ORDER: RelClass[] = [
+  "unchanged",
+  "modified",
+  "relocated",
+  "merge",
+  "split",
+  "complex",
+  "created",
+  "removed",
+];
+
+export const REL_COLORS: Record<RelClass, string> = {
+  unchanged: "#9ec5ab",
+  modified: "#e5b250",
+  relocated: "#3fb8c4",
+  merge: "#5a8fd8",
+  split: "#e07550",
+  complex: "#b25dab",
+  created: "#6cc46c",
+  removed: "#d35a5a",
+};
+
 export interface ClassifyOptions {
   tauMatch: number;
   tauSame: number;
+  linkByCode: boolean;
+  linkByName: boolean;
+  // Only consulted when both linkByCode and linkByName are true.
+  linkMode: "either" | "both";
 }
 
 interface PairRow {
@@ -22,6 +52,10 @@ interface PairRow {
   coverage_a: number;
   coverage_b: number;
   iou: number;
+  a_code: string | null;
+  a_name: string | null;
+  b_code: string | null;
+  b_name: string | null;
 }
 
 interface PairOut extends PairRow {
@@ -42,11 +76,70 @@ const num = (v: unknown): number => {
   return Number(v);
 };
 
+const str = (v: unknown): string | null => (v == null ? null : String(v));
+
+// Builds the set of values that appear exactly once in a keyed table's column.
+// Non-unique values (shared by multiple polygons) are excluded because they
+// can't reliably identify a single unit — matching on them would union all
+// polygons sharing that value into one cluster.
+function uniqueValues(
+  rows: Array<Record<string, unknown>>,
+  col: string,
+): Set<string> {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    const v = str(r[col]);
+    if (v != null) counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  const out = new Set<string>();
+  for (const [v, n] of counts) if (n === 1) out.add(v);
+  return out;
+}
+
+// True if a pair's code and/or name match across versions, per the user's
+// linkByCode/linkByName/linkMode settings. A value only qualifies when it is
+// unique on each side — duplicates (e.g. "No_Pcode") are excluded to prevent
+// spurious mass-linking. Called for any touching pair, regardless of coverage.
+function identityMatch(
+  p: PairRow,
+  opts: ClassifyOptions,
+  uniqueCodesA: Set<string>,
+  uniqueCodesB: Set<string>,
+  uniqueNamesA: Set<string>,
+  uniqueNamesB: Set<string>,
+): boolean {
+  if (!opts.linkByCode && !opts.linkByName) return false;
+  const codeMatch =
+    opts.linkByCode &&
+    p.a_code != null &&
+    p.a_code === p.b_code &&
+    uniqueCodesA.has(p.a_code) &&
+    uniqueCodesB.has(p.b_code!);
+  const nameMatch =
+    opts.linkByName &&
+    p.a_name != null &&
+    p.a_name === p.b_name &&
+    uniqueNamesA.has(p.a_name) &&
+    uniqueNamesB.has(p.b_name!);
+  if (opts.linkByCode && opts.linkByName) {
+    return opts.linkMode === "both" ? codeMatch && nameMatch : codeMatch || nameMatch;
+  }
+  return codeMatch || nameMatch;
+}
+
 export async function stageClassify(
   conn: AsyncDuckDBConnection,
-  { tauMatch, tauSame }: ClassifyOptions,
+  opts: ClassifyOptions,
 ): Promise<{ pairs: PairOut[]; singletons: SingletonOut[] }> {
-  const pairs: PairRow[] = (await conn.query("SELECT * FROM cw_pairs"))
+  const { tauMatch, tauSame } = opts;
+  const pairs: PairRow[] = (
+    await conn.query(`--sql
+      SELECT p.*, ak.code AS a_code, ak.name AS a_name, bk.code AS b_code, bk.name AS b_name
+      FROM cw_pairs p
+      LEFT JOIN cw_a_keyed ak ON ak.fid = p.a_fid
+      LEFT JOIN cw_b_keyed bk ON bk.fid = p.b_fid
+    `)
+  )
     .toArray()
     .map((r: Record<string, unknown>) => ({
       a_fid: num(r.a_fid),
@@ -55,27 +148,115 @@ export async function stageClassify(
       coverage_a: num(r.coverage_a),
       coverage_b: num(r.coverage_b),
       iou: num(r.iou),
+      a_code: str(r.a_code),
+      a_name: str(r.a_name),
+      b_code: str(r.b_code),
+      b_name: str(r.b_name),
     }));
 
-  const allA: number[] = (await conn.query("SELECT fid FROM cw_a_keyed"))
-    .toArray()
-    .map((r: Record<string, unknown>) => num(r.fid));
-  const allB: number[] = (await conn.query("SELECT fid FROM cw_b_keyed"))
-    .toArray()
-    .map((r: Record<string, unknown>) => num(r.fid));
+  const aRows = (await conn.query("SELECT fid, code, name FROM cw_a_keyed")).toArray() as Array<
+    Record<string, unknown>
+  >;
+  const bRows = (await conn.query("SELECT fid, code, name FROM cw_b_keyed")).toArray() as Array<
+    Record<string, unknown>
+  >;
 
-  // Union-find over "a:<fid>" / "b:<fid>" — only edges meeting tauMatch
-  // contribute. Unmatched fids get their own singleton component.
+  const allA = aRows.map((r) => num(r.fid));
+  const allB = bRows.map((r) => num(r.fid));
+
+  // Values that appear exactly once per side — only these are eligible as
+  // identity anchors. Duplicates (e.g. "No_Pcode") are excluded.
+  const uniqueCodesA = uniqueValues(aRows, "code");
+  const uniqueCodesB = uniqueValues(bRows, "code");
+  const uniqueNamesA = uniqueValues(aRows, "name");
+  const uniqueNamesB = uniqueValues(bRows, "name");
+
+  // Union-find over "a:<fid>" / "b:<fid>". Unmatched fids get their own
+  // singleton component. Two-phase when identity linking is on:
+  //
+  // Phase 1 — Identity: pair A/B fids that share a unique code/name AND have no
+  //   other spatial tauMatch connections to third parties. "Claiming" both fids
+  //   prevents neighbours from absorbing them into larger clusters.
+  //
+  //   The "no other spatial connections" guard is critical: when A splits into
+  //   B1 (inheriting A's code) + B2 (new code), A connects spatially above
+  //   tauMatch to both B1 and B2. If we claimed A↔B1 as an identity pair, B2
+  //   would be left disconnected (showing as "created" instead of "split"). By
+  //   The "all neighbors covered" guard is critical: when A splits into B1
+  //   (inheriting A's code) + B2 (new code), B2 has no identity match. Since
+  //   not all of A's spatial neighbors are identity-covered, A is not claimed —
+  //   Phase 2 then handles A→B1+B2 correctly as a split.
+  //
+  //   Conversely, when a region of N shifted units all have 1:1 code matches
+  //   (like Arbin, Harasta, Jaramana…), every spatial neighbor of each unit IS
+  //   identity-covered, so all N pairs are claimed and the N:M complex cluster
+  //   decomposes into N separate 1:1 pairs.
+  //
+  // Phase 2 — Spatial: union unclaimed fids whose coverage passes tauMatch,
+  //   exactly as the original algorithm. Claimed fids are skipped here.
   const uf = new UnionFind();
   for (const fid of allA) uf.add(`a:${fid}`);
   for (const fid of allB) uf.add(`b:${fid}`);
 
-  const passingPairs: PairRow[] = [];
+  // Pre-compute which B fids each A fid reaches via tauMatch (and vice versa),
+  // and which fids have any identity match at all (used for the coverage check).
+  const spatialNeighborsA = new Map<number, Set<number>>();
+  const spatialNeighborsB = new Map<number, Set<number>>();
   for (const p of pairs) {
-    if (Math.max(p.coverage_a, p.coverage_b) >= tauMatch) {
-      uf.union(`a:${p.a_fid}`, `b:${p.b_fid}`);
-      passingPairs.push(p);
+    if (Math.max(p.coverage_a, p.coverage_b) < tauMatch) continue;
+    if (!spatialNeighborsA.has(p.a_fid)) spatialNeighborsA.set(p.a_fid, new Set());
+    if (!spatialNeighborsB.has(p.b_fid)) spatialNeighborsB.set(p.b_fid, new Set());
+    spatialNeighborsA.get(p.a_fid)!.add(p.b_fid);
+    spatialNeighborsB.get(p.b_fid)!.add(p.a_fid);
+  }
+
+  // A/B fids that have at least one potential identity match — used to decide
+  // whether a fid's spatial neighbors are "identity-covered."
+  const identityASet = new Set<number>();
+  const identityBSet = new Set<number>();
+  if (opts.linkByCode || opts.linkByName) {
+    for (const p of pairs) {
+      if (identityMatch(p, opts, uniqueCodesA, uniqueCodesB, uniqueNamesA, uniqueNamesB)) {
+        identityASet.add(p.a_fid);
+        identityBSet.add(p.b_fid);
+      }
     }
+  }
+
+  const passingPairs: Array<PairRow & { rescuedByIdentity: boolean }> = [];
+  const claimedA = new Set<number>();
+  const claimedB = new Set<number>();
+
+  if (opts.linkByCode || opts.linkByName) {
+    for (const p of pairs) {
+      if (!identityMatch(p, opts, uniqueCodesA, uniqueCodesB, uniqueNamesA, uniqueNamesB)) continue;
+      if (claimedA.has(p.a_fid) || claimedB.has(p.b_fid)) continue;
+      // Safe to claim only if every other spatial tauMatch neighbor of A_fid is
+      // also identity-covered in B (and vice versa). If any spatial neighbor
+      // lacks an identity match, it signals a genuine split/merge — skip the
+      // claim and let Phase 2 handle the whole cluster via spatial overlap.
+      const aSpatialBFids = spatialNeighborsA.get(p.a_fid) ?? new Set<number>();
+      const bSpatialAFids = spatialNeighborsB.get(p.b_fid) ?? new Set<number>();
+      const allANeighborsCovered = [...aSpatialBFids].every(
+        (bOther) => bOther === p.b_fid || identityBSet.has(bOther),
+      );
+      const allBNeighborsCovered = [...bSpatialAFids].every(
+        (aOther) => aOther === p.a_fid || identityASet.has(aOther),
+      );
+      if (!allANeighborsCovered || !allBNeighborsCovered) continue;
+      claimedA.add(p.a_fid);
+      claimedB.add(p.b_fid);
+      const spatialAlsoPass = Math.max(p.coverage_a, p.coverage_b) >= tauMatch;
+      uf.union(`a:${p.a_fid}`, `b:${p.b_fid}`);
+      passingPairs.push({ ...p, rescuedByIdentity: !spatialAlsoPass });
+    }
+  }
+
+  for (const p of pairs) {
+    if (Math.max(p.coverage_a, p.coverage_b) < tauMatch) continue;
+    if (claimedA.has(p.a_fid) || claimedB.has(p.b_fid)) continue;
+    uf.union(`a:${p.a_fid}`, `b:${p.b_fid}`);
+    passingPairs.push({ ...p, rescuedByIdentity: false });
   }
 
   const components = uf.components();
@@ -101,11 +282,18 @@ export async function stageClassify(
 
   // Best IoU per cluster for the 1:1 IoU check (worst-case: one pair).
   const clusterBestIou = new Map<number, number>();
+  // True only if every edge that connected this cluster was an identity
+  // rescue rather than a spatial tauMatch pass. For 1:1 clusters there is
+  // exactly one connecting edge, so this is unambiguous; it's irrelevant for
+  // larger clusters (merge/split/complex stay classified as today either way).
+  const clusterRescuedOnly = new Map<number, boolean>();
   for (const p of passingPairs) {
     const root = uf.find(`a:${p.a_fid}`);
     const id = clusterId.get(root)!;
     const prev = clusterBestIou.get(id) ?? -Infinity;
     if (p.iou > prev) clusterBestIou.set(id, p.iou);
+    const prevRescuedOnly = clusterRescuedOnly.get(id) ?? true;
+    clusterRescuedOnly.set(id, prevRescuedOnly && p.rescuedByIdentity);
   }
 
   // Classify each cluster
@@ -115,8 +303,12 @@ export async function stageClassify(
     const nb = bFids.length;
     let cls: RelClass;
     if (na === 1 && nb === 1) {
-      const iou = clusterBestIou.get(id) ?? 0;
-      cls = iou >= tauSame ? "unchanged" : "modified";
+      if (clusterRescuedOnly.get(id)) {
+        cls = "relocated";
+      } else {
+        const iou = clusterBestIou.get(id) ?? 0;
+        cls = iou >= tauSame ? "unchanged" : "modified";
+      }
     } else if (na === 1 && nb > 1) {
       cls = "split";
     } else if (na > 1 && nb === 1) {
@@ -243,7 +435,9 @@ export async function rebuildChangelog(
     CREATE TABLE cw_changelog AS
     SELECT
       ak.code AS code_a,
+      ak.name AS name_a,
       bk.code AS code_b,
+      bk.name AS name_b,
       p.relationship_class,
       ROUND(p.coverage_a, 3) AS a_in_b,
       ROUND(p.coverage_b, 3) AS b_in_a,
@@ -256,7 +450,9 @@ export async function rebuildChangelog(
 
     UNION ALL
 
-    SELECT ak.code AS code_a, NULL AS code_b, pc.relationship_class,
+    SELECT ak.code AS code_a, ak.name AS name_a,
+           NULL AS code_b, NULL AS name_b,
+           pc.relationship_class,
            NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity,
            ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged
     FROM cw_polygon_class pc
@@ -269,7 +465,9 @@ export async function rebuildChangelog(
 
     UNION ALL
 
-    SELECT NULL AS code_a, bk.code AS code_b, pc.relationship_class,
+    SELECT NULL AS code_a, NULL AS name_a,
+           bk.code AS code_b, bk.name AS name_b,
+           pc.relationship_class,
            NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity,
            ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged
     FROM cw_polygon_class pc

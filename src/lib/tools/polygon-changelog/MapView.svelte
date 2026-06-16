@@ -10,6 +10,7 @@
   import { onDestroy, onMount } from "svelte";
   import { createSpin } from "$lib/utils/spin";
   import { loadStyle, polyFilter, lineWidth } from "$lib/utils/mapStyle";
+  import { REL_COLORS, REL_ORDER } from "./pipeline";
 
   let {
     overlayGeojson = null,
@@ -44,38 +45,9 @@
   let sidePending: number | undefined;
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
 
-  // Color palette per relationship_class. The palette intentionally keeps
-  // unchanged a calm desaturated green so changed classes pop visually.
-  const REL_COLORS: Record<string, string> = {
-    unchanged: "#9ec5ab",
-    modified: "#e5b250",
-    merge: "#5a8fd8",
-    split: "#e07550",
-    complex: "#b25dab",
-    created: "#6cc46c",
-    removed: "#d35a5a",
-  };
-
   function fillColorExpr(): ExpressionSpecification {
-    return [
-      "match",
-      ["get", "relationship_class"],
-      "unchanged",
-      REL_COLORS.unchanged,
-      "modified",
-      REL_COLORS.modified,
-      "merge",
-      REL_COLORS.merge,
-      "split",
-      REL_COLORS.split,
-      "complex",
-      REL_COLORS.complex,
-      "created",
-      REL_COLORS.created,
-      "removed",
-      REL_COLORS.removed,
-      "#cccccc",
-    ] as unknown as ExpressionSpecification;
+    const stops = REL_ORDER.flatMap((c) => [c, REL_COLORS[c]]);
+    return ["match", ["get", "relationship_class"], ...stops, "#cccccc"] as unknown as ExpressionSpecification;
   }
 
   function fillOpacityExpr(): ExpressionSpecification {

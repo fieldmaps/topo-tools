@@ -9,6 +9,7 @@
     PipelineError,
     reclassifyOnly,
     runFromLoaded,
+    REL_ORDER,
     type RelClass,
     type TableRow,
   } from "./pipeline";
@@ -24,16 +25,6 @@
     "Compute coverage",
     "Classify clusters",
     "Render overlay",
-  ];
-
-  const ALL_CLASSES: RelClass[] = [
-    "unchanged",
-    "modified",
-    "merge",
-    "split",
-    "complex",
-    "created",
-    "removed",
   ];
 
   // Input state
@@ -57,6 +48,16 @@
   // Thresholds
   let tauMatch = $state(0.8);
   let tauSame = $state(0.98);
+
+  // Matching mode: geometry-first (pure spatial) or identity-first (code/name
+  // anchors take priority over spatial overlap). Identity mode uses whichever
+  // code/name columns the user has already selected on each side.
+  let matchMode = $state<"geometry" | "identity">("geometry");
+  let linkMode = $state<"either" | "both">("either");
+  const linkByCode = $derived(
+    matchMode === "identity" && aCodeCol.length > 0 && bCodeCol.length > 0,
+  );
+  const linkByName = $derived(matchMode === "identity" && aNameCol !== null && bNameCol !== null);
 
   // Pipeline run state
   let running = $state(false);
@@ -85,7 +86,7 @@
     a_fid: number | null;
     b_fid: number | null;
   } | null>(null);
-  let visibleClasses = $state<Set<RelClass>>(new Set(ALL_CLASSES));
+  let visibleClasses = $state<Set<RelClass>>(new Set(REL_ORDER));
 
   // Comparison mode
   let showSide = $state<"a" | "b">("b");
@@ -219,6 +220,9 @@
           aNameCol,
           bCodeCol,
           bNameCol,
+          linkByCode,
+          linkByName,
+          linkMode,
         },
         (stage, label) => {
           currentStage = stage;
@@ -289,6 +293,9 @@
         aNameCol,
         bCodeCol,
         bNameCol,
+        linkByCode,
+        linkByName,
+        linkMode,
       });
       overlayGeoJSON = result.overlayGeoJSON;
       outlineAGeoJSON = result.outlineAGeoJSON;
@@ -309,7 +316,7 @@
   function exposeDebugHook(): void {
     if (typeof window === "undefined") return;
     const summary: Record<string, number> = {};
-    for (const c of ALL_CLASSES) summary[c] = 0;
+    for (const c of REL_ORDER) summary[c] = 0;
     const seen = new Set<string>();
     for (const r of tableRows) {
       const key = r.cluster_id + ":" + r.relationship_class;
@@ -320,7 +327,7 @@
     // Per-cluster counts are derived from unique cluster_id; a single cluster
     // might produce multiple rows so we de-dup by (cluster_id, class).
     const clusterCounts: Record<string, number> = {};
-    for (const c of ALL_CLASSES) clusterCounts[c] = 0;
+    for (const c of REL_ORDER) clusterCounts[c] = 0;
     const clusterClass = new Map<number, RelClass>();
     for (const r of tableRows) clusterClass.set(r.cluster_id, r.relationship_class);
     for (const cls of clusterClass.values()) clusterCounts[cls]++;
@@ -573,6 +580,30 @@
 
     <section class="cw-step">
       <h2 class="cw-step-heading">Thresholds</h2>
+
+      <div class="cw-match-toggle" role="group" aria-label="Matching mode">
+        <button
+          class="cw-match-btn"
+          class:active={matchMode === "geometry"}
+          disabled={running}
+          onclick={() => { matchMode = "geometry"; scheduleReclassify(); }}
+        >Geometry first</button>
+        <button
+          class="cw-match-btn"
+          class:active={matchMode === "identity"}
+          disabled={running}
+          onclick={() => { matchMode = "identity"; scheduleReclassify(); }}
+        >Identity first</button>
+      </div>
+      <p class="cw-hint">
+        {#if matchMode === "geometry"}
+          Units matched by spatial overlap only.
+        {:else}
+          Units sharing a unique code or name are paired first — moved units appear as
+          <em>relocated</em> rather than merge/split/complex.
+        {/if}
+      </p>
+
       <label class="cw-slider">
         <span>Match — {Math.round(tauMatch * 100)}%</span>
         <input
@@ -585,7 +616,7 @@
           disabled={running}
         />
         <p class="cw-hint">
-          How much of either polygon must overlap the other for the two to be considered related.
+          How much of either polygon must overlap the other to be considered related.
           Lower = more matches.
         </p>
       </label>
@@ -608,6 +639,15 @@
             than <em>modified</em>.
           </p>
         </label>
+        {#if linkByCode && linkByName}
+          <label class="cw-checkbox-row">
+            <span>Identity match:</span>
+            <select bind:value={linkMode} onchange={scheduleReclassify} disabled={running}>
+              <option value="either">Code or name</option>
+              <option value="both">Code and name</option>
+            </select>
+          </label>
+        {/if}
       </details>
     </section>
 
@@ -862,6 +902,50 @@
   }
   .cw-advanced > .cw-slider {
     margin-top: 0.5rem;
+  }
+  .cw-match-toggle {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.35rem;
+  }
+  .cw-match-btn {
+    flex: 1;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8rem;
+    border: none;
+    border-left: 1px solid #d1d5db;
+    background: #fff;
+    color: #6b7280;
+    cursor: pointer;
+  }
+  .cw-match-btn:first-child {
+    border-left: none;
+  }
+  .cw-match-btn:hover:not(:disabled) {
+    background: #f9fafb;
+    color: #374151;
+  }
+  .cw-match-btn.active {
+    background: #f3f4f6;
+    color: #111;
+    font-weight: 600;
+  }
+  .cw-match-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .cw-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: #374151;
+    margin-top: 0.5rem;
+  }
+  .cw-checkbox-row select {
+    font-size: 0.8rem;
   }
   .cw-status {
     font-size: 0.85rem;

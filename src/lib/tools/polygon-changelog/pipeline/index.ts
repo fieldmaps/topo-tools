@@ -2,7 +2,7 @@ import type { AsyncDuckDB, AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { buildKeyed, dropPriorRun, loadSide } from "./load";
 import { stageOverlayResilient } from "./overlay";
 import { stageAreas } from "./areas";
-import { stageClassify, type RelClass } from "./classify";
+import { stageClassify, REL_ORDER, REL_COLORS, type RelClass } from "./classify";
 import { stageRender, buildOverlayGeoJSON, buildOutlineGeoJSON, computeBounds } from "./render";
 import { stageTable, type TableRow } from "./table";
 
@@ -26,6 +26,9 @@ export interface PipelineOptions {
   aNameCol: string | null;
   bCodeCol: string[];
   bNameCol: string | null;
+  linkByCode: boolean;
+  linkByName: boolean;
+  linkMode: "either" | "both";
 }
 
 export interface PipelineResult {
@@ -71,7 +74,13 @@ export async function runFromLoaded(
 
     stage = 5;
     onProgress(5, "Classifying clusters");
-    await stageClassify(conn, { tauMatch: opts.tauMatch, tauSame: opts.tauSame });
+    await stageClassify(conn, {
+      tauMatch: opts.tauMatch,
+      tauSame: opts.tauSame,
+      linkByCode: opts.linkByCode,
+      linkByName: opts.linkByName,
+      linkMode: opts.linkMode,
+    });
 
     stage = 6;
     onProgress(6, "Rendering overlay");
@@ -99,7 +108,13 @@ export async function reclassifyOnly(
   conn: AsyncDuckDBConnection,
   opts: PipelineOptions,
 ): Promise<PipelineResult> {
-  await stageClassify(conn, { tauMatch: opts.tauMatch, tauSame: opts.tauSame });
+  await stageClassify(conn, {
+    tauMatch: opts.tauMatch,
+    tauSame: opts.tauSame,
+    linkByCode: opts.linkByCode,
+    linkByName: opts.linkByName,
+    linkMode: opts.linkMode,
+  });
   await stageRender(conn);
   const [overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds] = await Promise.all([
     buildOverlayGeoJSON(conn),
@@ -135,3 +150,4 @@ export async function runPipeline(
 }
 
 export type { TableRow, RelClass };
+export { REL_ORDER, REL_COLORS };

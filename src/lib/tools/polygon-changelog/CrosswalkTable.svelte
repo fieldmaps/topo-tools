@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { RelClass, TableRow } from "./pipeline";
+  import { REL_COLORS, REL_ORDER, type RelClass, type TableRow } from "./pipeline";
 
   let {
     rows = [],
@@ -24,26 +24,6 @@
   } = $props();
 
   let search = $state("");
-
-  const REL_COLORS: Record<RelClass, string> = {
-    unchanged: "#9ec5ab",
-    modified: "#e5b250",
-    merge: "#5a8fd8",
-    split: "#e07550",
-    complex: "#b25dab",
-    created: "#6cc46c",
-    removed: "#d35a5a",
-  };
-
-  const REL_ORDER: RelClass[] = [
-    "unchanged",
-    "modified",
-    "merge",
-    "split",
-    "complex",
-    "created",
-    "removed",
-  ];
 
   // Filter rows by visibleClasses and free-text search. Searches across A/B
   // codes and names.
@@ -318,7 +298,7 @@
         {#if tooltip.cov_b != null}
           <span class="cw-tooltip-pct">{Math.round(tooltip.cov_b * 100)}%</span><span>B in A</span>
         {/if}
-        {#if (tooltip.relClass === "unchanged" || tooltip.relClass === "modified") && tooltip.iou != null}
+        {#if (tooltip.relClass === "unchanged" || tooltip.relClass === "modified" || tooltip.relClass === "relocated") && tooltip.iou != null}
           <span class="cw-tooltip-pct">{Math.round(tooltip.iou * 100)}%</span><span>Similarity</span>
         {/if}
       </div>
