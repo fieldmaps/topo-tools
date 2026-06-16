@@ -72,18 +72,21 @@ let staticFailedKinds = new Set<IssueKind>();
 // throws (typically "Result area inconsistent with overlay operation" — float
 // jitter in the coverage's internal overlay). Grid-snapping the input removes
 // the near-degenerate edges that trip the overlay.
+// Returns the input table actually used so callers can reuse it for a subsequent retry.
 async function cleanResilient(
   conn: AsyncDuckDBConnection,
   target: string,
   snapDeg: number,
   gapDeg: number,
-): Promise<void> {
+): Promise<"tc_input" | "tc_input_reduced"> {
   try {
     await buildClean(conn, target, snapDeg, gapDeg, "tc_input");
+    return "tc_input";
   } catch (e) {
     console.warn(`${target}: clean failed, retrying with reduced precision:`, e);
     await buildReducedInput(conn);
     await buildClean(conn, target, snapDeg, gapDeg, "tc_input_reduced");
+    return "tc_input_reduced";
   }
 }
 
@@ -107,18 +110,20 @@ async function computeBounds(
   return null;
 }
 
-// Re-clean at the current slider values. The clean uses snap=0 deliberately:
-// ST_CoverageClean's snapping re-nodes the WHOLE coverage (collateral changes far
-// from any issue), and snapping is the only thing that closes near-miss slivers —
-// so we don't snap. The clean fixes overlaps + fills gaps (snap=0 touches only the
-// genuinely-broken polygons); slivers are DETECTION-ONLY (the sliver-tolerance
-// slider drives ST_CoverageInvalidEdges, not the fix). Gap + overlap regions are
-// static (built once per load) and are NOT recomputed.
+// Re-clean at the current slider values. Primary clean uses snap=0: ST_CoverageClean's
+// snapping re-nodes the WHOLE coverage (collateral changes far from any issue), so we
+// skip it. The clean fixes overlaps + fills gaps; slivers are DETECTION-ONLY.
+//
+// However, snap=0 cannot resolve crossing-boundary topology (polygon edges that
+// physically cross a neighbour's edge, not just a near-miss gap). GEOS collapses the
+// affected polygon to empty rather than producing a corrupt result. If that happens,
+// we retry with auto-snap (-1): broader vertex movement but recovers the polygons.
+// Gap + overlap regions are static (built once per load) and are NOT recomputed.
 export async function recleanOnly(
   conn: AsyncDuckDBConnection,
   opts: CleanOptions,
 ): Promise<RecleanResult> {
-  const snapDeg = 0; // never snap — see note above (slivers are detection-only)
+  const snapDeg = 0; // snap=0 by preference — see note above
   const gapDeg = metersToDegrees(opts.gapWidthM);
 
   // Re-detect slivers at the new tolerance and rebuild the issues table first, so
@@ -126,9 +131,21 @@ export async function recleanOnly(
   const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds);
   cachedIssues = issuesRes.rows;
 
-  await cleanResilient(conn, "tc_clean", snapDeg, gapDeg);
+  const inputUsed = await cleanResilient(conn, "tc_clean", snapDeg, gapDeg);
 
-  const kept = await countRows(conn, "tc_clean");
+  // Auto-snap fallback: if snap=0 collapsed any polygons (crossing-edge topology),
+  // retry with snap=-1. This makes wider vertex moves but recovers lost polygons.
+  let kept = await countRows(conn, "tc_clean");
+  if (kept < totalCount) {
+    console.warn(`${totalCount - kept} polygon(s) collapsed at snap=0; retrying with auto-snap`);
+    try {
+      await buildClean(conn, "tc_clean", -1, gapDeg, inputUsed);
+      kept = await countRows(conn, "tc_clean");
+    } catch (e) {
+      console.warn("auto-snap retry also failed; keeping snap=0 result:", e);
+    }
+  }
+
   const fixedKeys = await checkFixedIssues(conn, cachedIssues);
   const exportCheck = await verifyExport(conn);
 

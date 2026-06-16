@@ -598,7 +598,7 @@
     {#if error}<div class="tc-error">{error}</div>{/if}
 
     {#if cleanedGeoJSON && collapsedCount > 0}
-      <p class="tc-warn">{collapsedCount} of {totalCount} polygons collapsed at this gap width.</p>
+      <p class="tc-warn">{collapsedCount} of {totalCount} polygons were dropped — the input has crossing-boundary defects that could not be resolved even with automatic snapping.</p>
     {/if}
 
     {#if cleanedGeoJSON}
