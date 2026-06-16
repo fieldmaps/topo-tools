@@ -635,6 +635,23 @@
       </section>
     {/if}
 
+    {#if cleanedGeoJSON && issues.length > 0}
+      <section class="tc-step">
+        <h2 class="tc-step-heading">Download issues</h2>
+        <p class="tc-hint">
+          Just the detected gaps, overlaps, and slivers — open in QGIS or ArcGIS to inspect or fix
+          them yourself.
+        </p>
+        <DownloadMenu
+          primaryLabel="Download Issues"
+          filenameStem={fileStem(files)}
+          cachedGeoJSON={issuesGeoJSON}
+          exportSource="topology_issues"
+          excludeFormatIds={["gdal:ESRI Shapefile"]}
+        />
+      </section>
+    {/if}
+
     <p class="tc-privacy">Your files never leave your device.</p>
   </aside>
 

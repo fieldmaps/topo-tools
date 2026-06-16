@@ -282,41 +282,53 @@ async function assembleIssues(
   conn: AsyncDuckDBConnection,
   failedKinds: Set<IssueKind>,
 ): Promise<IssuesResult> {
+  // Linear scalings (degSqToM2(x) = x * areaFactor, degToM(x) = x * widthFactor) —
+  // compute the factor once here so the conversion formula itself stays defined
+  // only in units.ts, with SQL just receiving the literal multiplier.
+  const areaFactor = degSqToM2(1).toExponential();
+  const widthFactor = degToM(1).toExponential();
   await conn.query(`--sql
     CREATE OR REPLACE TABLE tc_issues AS
-    SELECT 'gap-' || n AS key, 'gap' AS kind, ST_Area(geom) AS area_deg,
-           (ST_MaximumInscribedCircle(geom)).radius AS mic_radius_deg,
-           NULL::BIGINT AS unit_a, NULL::BIGINT AS unit_b, geom,
-           ST_XMin(geom) AS xmin, ST_YMin(geom) AS ymin, ST_XMax(geom) AS xmax, ST_YMax(geom) AS ymax
-    FROM tc_gap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-    UNION ALL
-    SELECT 'overlap-' || n, 'overlap', ST_Area(geom),
-           (ST_MaximumInscribedCircle(geom)).radius,
-           fa, fb, geom,
-           ST_XMin(geom), ST_YMin(geom), ST_XMax(geom), ST_YMax(geom)
-    FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-    UNION ALL
-    SELECT 'sliver-' || n, 'sliver', area_deg2, mic_radius_deg,
-           NULL::BIGINT, NULL::BIGINT, geom,
-           xmin, ymin, xmax, ymax
-    FROM tc_sliver_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    SELECT key, kind, area_deg, mic_radius_deg,
+           -- Slivers are lines — no area or width; NULL rather than a misleading 0.
+           CASE WHEN kind = 'sliver' THEN NULL ELSE area_deg * ${areaFactor} END AS area_m2,
+           CASE WHEN kind = 'sliver' THEN NULL ELSE mic_radius_deg * 2 * ${widthFactor} END AS max_width_m,
+           unit_a, unit_b, geom, xmin, ymin, xmax, ymax
+    FROM (
+      SELECT 'gap-' || n AS key, 'gap' AS kind, ST_Area(geom) AS area_deg,
+             (ST_MaximumInscribedCircle(geom)).radius AS mic_radius_deg,
+             NULL::BIGINT AS unit_a, NULL::BIGINT AS unit_b, geom,
+             ST_XMin(geom) AS xmin, ST_YMin(geom) AS ymin, ST_XMax(geom) AS xmax, ST_YMax(geom) AS ymax
+      FROM tc_gap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      UNION ALL
+      SELECT 'overlap-' || n, 'overlap', ST_Area(geom),
+             (ST_MaximumInscribedCircle(geom)).radius,
+             fa, fb, geom,
+             ST_XMin(geom), ST_YMin(geom), ST_XMax(geom), ST_YMax(geom)
+      FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      UNION ALL
+      SELECT 'sliver-' || n, 'sliver', area_deg2, mic_radius_deg,
+             NULL::BIGINT, NULL::BIGINT, geom,
+             xmin, ymin, xmax, ymax
+      FROM tc_sliver_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    ) t
   `);
 
   const meta = await conn.query(`--sql
-    SELECT key, kind, area_deg, mic_radius_deg, unit_a, unit_b, xmin, ymin, xmax, ymax
+    SELECT key, kind, area_m2, max_width_m, unit_a, unit_b, xmin, ymin, xmax, ymax
     FROM tc_issues
     ORDER BY
       CASE kind WHEN 'overlap' THEN 0 WHEN 'gap' THEN 1 ELSE 2 END,
-      CASE kind WHEN 'overlap' THEN -mic_radius_deg
-                WHEN 'gap' THEN mic_radius_deg
-                ELSE -mic_radius_deg END
+      CASE kind WHEN 'overlap' THEN -max_width_m
+                WHEN 'gap' THEN max_width_m
+                ELSE -max_width_m END
   `);
   const rows: IssueRow[] = (
     meta.toArray() as Array<{
       key: string;
       kind: "gap" | "overlap" | "sliver";
-      area_deg: number;
-      mic_radius_deg: number;
+      area_m2: number | null;
+      max_width_m: number | null;
       unit_a: bigint | number | null;
       unit_b: bigint | number | null;
       xmin: number;
@@ -327,9 +339,9 @@ async function assembleIssues(
   ).map((r) => ({
     key: r.key,
     kind: r.kind,
-    // Slivers are lines — no area or width; show "—" rather than "0.0 m²".
-    areaM2: r.kind === "sliver" ? NaN : degSqToM2(r.area_deg),
-    maxWidthM: r.kind === "sliver" ? NaN : 2 * degToM(r.mic_radius_deg),
+    // Slivers carry NULL area/width from SQL — show "—" rather than "0.0 m²".
+    areaM2: r.area_m2 ?? NaN,
+    maxWidthM: r.max_width_m ?? NaN,
     units: [r.unit_a, r.unit_b]
       .filter((u): u is bigint | number => u !== null)
       .map((u) => Number(u)),
@@ -337,16 +349,32 @@ async function assembleIssues(
   }));
 
   const gj = await conn.query(`--sql
-    SELECT key, kind, ST_AsGeoJSON(geom) AS _geom
+    SELECT key, kind, area_m2, max_width_m, unit_a, unit_b, ST_AsGeoJSON(geom) AS _geom
     FROM tc_issues WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
   `);
-  const features = (gj.toArray() as Array<{ key: string; kind: string; _geom: string }>).map(
-    (r) => ({
-      type: "Feature",
-      geometry: JSON.parse(r._geom),
-      properties: { key: r.key, kind: r.kind },
-    }),
-  );
+  const features = (
+    gj.toArray() as Array<{
+      key: string;
+      kind: string;
+      area_m2: number | null;
+      max_width_m: number | null;
+      unit_a: bigint | number | null;
+      unit_b: bigint | number | null;
+      _geom: string;
+    }>
+  ).map((r) => ({
+    type: "Feature",
+    geometry: JSON.parse(r._geom),
+    properties: {
+      key: r.key,
+      kind: r.kind,
+      area_m2: r.area_m2,
+      max_width_m: r.max_width_m,
+      // BIGINT columns surface as JS `bigint`, which JSON.stringify can't serialize.
+      unit_a: r.unit_a === null ? null : Number(r.unit_a),
+      unit_b: r.unit_b === null ? null : Number(r.unit_b),
+    },
+  }));
   return { rows, geojson: JSON.stringify({ type: "FeatureCollection", features }), failedKinds };
 }
 

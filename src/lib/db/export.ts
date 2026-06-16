@@ -7,6 +7,7 @@ export type ExportSource =
   | "extend"
   | "clip"
   | "clean_topology"
+  | "topology_issues"
   | "crosswalk_overlay"
   | "crosswalk_changelog";
 
@@ -114,12 +115,25 @@ interface SourceConfig {
   attrTable: string | null;
   suffix: string;
   kind: SourceKind;
+  // Explicit attribute column allowlist for attrTable === null sources. When
+  // unset, buildSpatialSelect passes through every non-geom column from the
+  // table (DESCRIBE-based). Use this when the table carries internal columns
+  // (e.g. raw-degree measurements, bounding boxes) that shouldn't leak into
+  // the exported attribute table.
+  columns?: string[];
 }
 
 const SOURCES: Record<ExportSource, SourceConfig> = {
   extend: { table: "layer_05", attrTable: "layer_attr", suffix: "_ee", kind: "spatial" },
   clip: { table: "layer_clip", attrTable: "layer_attr", suffix: "_em", kind: "spatial" },
   clean_topology: { table: "tc_clean", attrTable: "layer_attr", suffix: "_cleaned", kind: "spatial" },
+  topology_issues: {
+    table: "tc_issues",
+    attrTable: null,
+    suffix: "_issues",
+    kind: "spatial",
+    columns: ["key", "kind", "area_m2", "max_width_m", "unit_a", "unit_b"],
+  },
   crosswalk_overlay: {
     table: "cw_overlay_render",
     attrTable: null,
@@ -329,12 +343,18 @@ async function buildSpatialSelect(
   geomExpr: string,
 ): Promise<string> {
   if (!source.attrTable) {
-    // Source carries its own props on the row; passthrough every non-geom column.
-    const desc = await conn.query(`DESCRIBE ${source.table}`);
-    const schema = desc.toArray() as Array<{ column_name: string; column_type: string }>;
-    const cols = schema
-      .filter((r) => r.column_name !== "geom")
-      .map((r) => `a.${JSON.stringify(r.column_name)}`);
+    // Source carries its own props on the row. An explicit allowlist (when
+    // given) takes precedence; otherwise passthrough every non-geom column.
+    let cols: string[];
+    if (source.columns) {
+      cols = source.columns.map((c) => `a.${JSON.stringify(c)}`);
+    } else {
+      const desc = await conn.query(`DESCRIBE ${source.table}`);
+      const schema = desc.toArray() as Array<{ column_name: string; column_type: string }>;
+      cols = schema
+        .filter((r) => r.column_name !== "geom")
+        .map((r) => `a.${JSON.stringify(r.column_name)}`);
+    }
     const extra = cols.length > 0 ? ", " + cols.join(", ") : "";
     return `SELECT ${geomExpr}${extra} FROM ${source.table} AS a WHERE a.geom IS NOT NULL`;
   }
