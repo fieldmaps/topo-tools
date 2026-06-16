@@ -16,6 +16,7 @@
     runFromLoaded,
     sliverVerticesGeoJSON as fetchSliverVertices,
     undoEdit,
+    type ExportCheck,
     type IssueKind,
     type IssueRow,
   } from "./pipeline";
@@ -95,6 +96,7 @@
   let issues = $state<IssueRow[]>([]);
   let fixedKeys = $state<Set<string>>(new Set());
   let detectionFailed = $state<Set<IssueKind>>(new Set());
+  let exportCheck = $state<ExportCheck | null>(null);
   let noResolutionSlivers = $state<Set<string>>(new Set());
   let bounds = $state<[number, number, number, number] | null>(null);
   let totalCount = $state(0);
@@ -199,6 +201,7 @@
     issues = [];
     fixedKeys = new Set();
     detectionFailed = new Set();
+    exportCheck = null;
     noResolutionSlivers = new Set();
     bounds = null;
     totalCount = 0;
@@ -262,6 +265,7 @@
       issues = result.issues;
       fixedKeys = result.fixedKeys;
       detectionFailed = result.detectionFailed;
+      exportCheck = result.exportCheck;
       bounds = result.bounds;
       totalCount = result.totalCount;
       collapsedCount = result.collapsedCount;
@@ -301,6 +305,7 @@
       issues = result.issues;
       issuesGeoJSON = result.issuesGeoJSON;
       detectionFailed = result.detectionFailed;
+      exportCheck = result.exportCheck;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -319,6 +324,7 @@
     issues: IssueRow[];
     fixedKeys: Set<string>;
     detectionFailed: Set<IssueKind>;
+    exportCheck: ExportCheck;
     collapsedCount: number;
     originalGeoJSON: string;
   }): void {
@@ -327,6 +333,7 @@
     issues = r.issues;
     fixedKeys = r.fixedKeys;
     detectionFailed = r.detectionFailed;
+    exportCheck = r.exportCheck;
     collapsedCount = r.collapsedCount;
     originalGeoJSON = r.originalGeoJSON;
   }
@@ -597,6 +604,28 @@
     {#if cleanedGeoJSON}
       <section class="tc-step">
         <h2 class="tc-step-heading">Download</h2>
+        {#if exportCheck}
+          {#if exportCheck.checkFailed}
+            <p class="tc-export-check tc-export-check--fail">
+              ⚠ Couldn't fully verify the export — GEOS failed to check it, even after retrying.
+              Inspect the download in GIS software before relying on it.
+            </p>
+          {:else if exportCheck.invalidCount === 0 && exportCheck.residualGaps === 0 && exportCheck.residualOverlaps === 0}
+            <p class="tc-export-check tc-export-check--ok">
+              ✓ Export verified: {exportCheck.rowCount} valid polygons, no gaps or overlaps remain.
+            </p>
+          {:else}
+            <p class="tc-export-check tc-export-check--warn">
+              ⚠ Export check found
+              {#if exportCheck.invalidCount > 0}{exportCheck.invalidCount} invalid {exportCheck.invalidCount === 1 ? "geometry" : "geometries"}{/if}
+              {#if exportCheck.invalidCount > 0 && (exportCheck.residualGaps > 0 || exportCheck.residualOverlaps > 0)}, {/if}
+              {#if exportCheck.residualGaps > 0}{exportCheck.residualGaps} residual {exportCheck.residualGaps === 1 ? "gap" : "gaps"}{/if}
+              {#if exportCheck.residualGaps > 0 && exportCheck.residualOverlaps > 0}, {/if}
+              {#if exportCheck.residualOverlaps > 0}{exportCheck.residualOverlaps} residual {exportCheck.residualOverlaps === 1 ? "overlap" : "overlaps"}{/if}
+              in the exported output.
+            </p>
+          {/if}
+        {/if}
         <DownloadMenu
           primaryLabel="Download GeoJSON"
           filenameStem={fileStem(files)}
@@ -763,6 +792,27 @@
     font-size: 0.8rem;
     color: #b45309;
     font-weight: 600;
+  }
+  .tc-export-check {
+    margin: 0 0 0.6rem;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.78rem;
+    border-radius: 4px;
+  }
+  .tc-export-check--ok {
+    color: #15803d;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+  }
+  .tc-export-check--warn {
+    color: #92400e;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+  }
+  .tc-export-check--fail {
+    color: #b91c1c;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
   }
   .tc-step--no-border {
     border-top: none;

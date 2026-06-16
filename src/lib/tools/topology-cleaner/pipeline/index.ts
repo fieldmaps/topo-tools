@@ -11,8 +11,10 @@ import {
   type IssueRow,
 } from "./issues";
 import { metersToDegrees, setCentroidLat } from "./units";
+import { verifyExport, type ExportCheck } from "./verify";
 
 export type { IssueKind, IssueRow } from "./issues";
+export type { ExportCheck } from "./verify";
 
 export type ProgressFn = (stage: number, label: string) => void;
 
@@ -44,6 +46,9 @@ export interface CleanResult {
   // Kinds whose detection query failed (even after retry) and was degraded to
   // an empty table — a 0 count for these means "couldn't check," not "clean."
   detectionFailed: Set<IssueKind>;
+  // Independent validation of the exact table that gets exported (tc_clean),
+  // run automatically on every clean/reclean. See verify.ts.
+  exportCheck: ExportCheck;
 }
 
 export interface RecleanResult {
@@ -53,6 +58,7 @@ export interface RecleanResult {
   issues: IssueRow[];
   issuesGeoJSON: string;
   detectionFailed: Set<IssueKind>;
+  exportCheck: ExportCheck;
 }
 
 // Carried from the full run to cheap re-runs.
@@ -124,6 +130,7 @@ export async function recleanOnly(
 
   const kept = await countRows(conn, "tc_clean");
   const fixedKeys = await checkFixedIssues(conn, cachedIssues);
+  const exportCheck = await verifyExport(conn);
 
   return {
     cleanedGeoJSON: await tableToGeoJSON(conn, "tc_clean", "layer_attr"),
@@ -132,6 +139,7 @@ export async function recleanOnly(
     issues: issuesRes.rows,
     issuesGeoJSON: issuesRes.geojson,
     detectionFailed: issuesRes.failedKinds,
+    exportCheck,
   };
 }
 
@@ -184,6 +192,7 @@ export async function runFromLoaded(
     collapsedCount: reclean.collapsedCount,
     fixedKeys: reclean.fixedKeys,
     detectionFailed: reclean.detectionFailed,
+    exportCheck: reclean.exportCheck,
   };
 }
 

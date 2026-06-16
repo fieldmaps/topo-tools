@@ -78,13 +78,25 @@ export async function buildClean(
 // boundary data, so this only ever collapses jitter, never real shape detail.
 const REDUCED_PRECISION_DEG = 1e-10;
 
-export async function buildReducedLayer(conn: AsyncDuckDBConnection): Promise<void> {
+// Generic version: reduces precision for any (fid, geom) source table into a
+// named target table. layer_01 -> layer_01_reduced is the common case (see
+// buildReducedLayer below); the export-verification sweep (verify.ts) reuses
+// this directly to make a reduced copy of tc_clean instead.
+export async function buildReducedCopy(
+  conn: AsyncDuckDBConnection,
+  sourceTable: string,
+  targetTable: string,
+): Promise<void> {
   await conn.query(`--sql
-    CREATE OR REPLACE TABLE layer_01_reduced AS
+    CREATE OR REPLACE TABLE ${targetTable} AS
     SELECT fid, ST_MakeValid(ST_ReducePrecision(geom, ${REDUCED_PRECISION_DEG})) AS geom
-    FROM layer_01
+    FROM ${sourceTable}
     WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
   `);
+}
+
+export async function buildReducedLayer(conn: AsyncDuckDBConnection): Promise<void> {
+  await buildReducedCopy(conn, "layer_01", "layer_01_reduced");
 }
 
 export async function buildReducedInput(conn: AsyncDuckDBConnection): Promise<void> {

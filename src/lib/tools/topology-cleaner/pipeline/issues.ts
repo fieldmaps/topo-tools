@@ -1,6 +1,17 @@
 import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { buildReducedLayer } from "./clean";
-import { degSqToM2, degToM, metersToDegrees } from "./units";
+import { degSqToM2, degToM, m2ToDegSq, metersToDegrees } from "./units";
+
+// Floor below which a "gap"/"overlap" region is discarded as noise rather than
+// surfaced as an issue. Real-world coverages can produce sub-cm² slivers purely
+// from floating-point residue — e.g. the precision-reduction retry (clean.ts)
+// snapping coordinates to a 1e-10deg grid can itself leave a few square-micron
+// artifact holes at feature junctions. Observed artifact areas on real failing
+// datasets topped out at 1.6e-7 m² (~0.4mm per side); 1cm² is ~60,000x that, with
+// zero risk of hiding a real defect (administrative-boundary slivers worth a
+// user's attention are orders of magnitude larger), while reliably excluding the
+// noise.
+const MIN_ISSUE_AREA_M2 = 1e-4; // 1 cm²
 
 // Sliver detection. A "sliver" is a near-miss T-junction between two polygons:
 // adjacent units that should share an edge but whose coordinates miss, leaving a
@@ -59,18 +70,20 @@ async function emptyRegions(conn: AsyncDuckDBConnection, table: string, extra = 
   );
 }
 
-// Gap regions = enclosed areas not covered by any polygon in the input.
+// Gap regions = enclosed areas not covered by any polygon in the source table.
 // Computed directly: union all polygons → interior rings of the union ARE the
 // gaps → convert each ring back to a polygon via difference against the filled
 // exterior. Independent of ST_CoverageClean, so works even when the coverage
 // has overlaps or degenerate edges that would trip the cleaner.
-function gapRegionsQuery(table: string): string {
+// Exported: also reused by verify.ts to sweep tc_clean (the export output)
+// for the same defect, not just layer_01 (the input).
+export function gapRegionsQuery(targetTable: string, sourceTable: string): string {
   return `--sql
-    CREATE OR REPLACE TABLE tc_gap_regions AS
+    CREATE OR REPLACE TABLE ${targetTable} AS
     WITH
     union_cte AS (
       SELECT ST_Union_Agg(geom) AS u
-      FROM ${table} WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      FROM ${sourceTable} WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
     ),
     parts AS (
       SELECT (UNNEST(ST_Dump(u))).geom AS poly
@@ -83,7 +96,8 @@ function gapRegionsQuery(table: string): string {
       FROM parts WHERE ST_NumInteriorRings(poly) > 0
     )
     SELECT row_number() OVER () AS n, geom
-    FROM holes WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > 0
+    FROM holes
+    WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > ${m2ToDegSq(MIN_ISSUE_AREA_M2).toExponential()}
   `;
 }
 
@@ -93,13 +107,13 @@ function gapRegionsQuery(table: string): string {
 // this so the UI can tell "detection failed" apart from "genuinely 0 gaps."
 export async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<boolean> {
   try {
-    await conn.query(gapRegionsQuery("layer_01"));
+    await conn.query(gapRegionsQuery("tc_gap_regions", "layer_01"));
     return true;
   } catch (e) {
     console.warn("gap-region detection failed; retrying with reduced precision:", e);
     try {
       await buildReducedLayer(conn);
-      await conn.query(gapRegionsQuery("layer_01_reduced"));
+      await conn.query(gapRegionsQuery("tc_gap_regions", "layer_01_reduced"));
       return true;
     } catch (e2) {
       console.warn("gap-region detection failed after retry; skipping gaps:", e2);
@@ -202,17 +216,18 @@ export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: numb
   }
 }
 
-// Overlap regions = polygonal pairwise intersections of the input polygons
-// (touching borders intersect as lines and are dropped by CollectionExtract).
-// Uses bbox predicates instead of ST_Intersects in the JOIN so DuckDB plans
-// this as PIECEWISE_MERGE_JOIN rather than SPATIAL_JOIN (which OOMs in WASM).
-function overlapRegionsQuery(table: string): string {
+// Overlap regions = polygonal pairwise intersections of polygons in the source
+// table (touching borders intersect as lines and are dropped by
+// CollectionExtract). Uses bbox predicates instead of ST_Intersects in the JOIN
+// so DuckDB plans this as PIECEWISE_MERGE_JOIN rather than SPATIAL_JOIN (which
+// OOMs in WASM). Exported: also reused by verify.ts to sweep tc_clean.
+export function overlapRegionsQuery(targetTable: string, sourceTable: string): string {
   return `--sql
-    CREATE OR REPLACE TABLE tc_overlap_regions AS
+    CREATE OR REPLACE TABLE ${targetTable} AS
     WITH pairs AS (
       SELECT a.fid AS fa, b.fid AS fb,
              ST_MakeValid(ST_CollectionExtract(ST_Intersection(a.geom, b.geom), 3)) AS geom
-      FROM ${table} a JOIN ${table} b
+      FROM ${sourceTable} a JOIN ${sourceTable} b
         ON a.fid < b.fid
         AND ST_XMax(b.geom) >= ST_XMin(a.geom) AND ST_XMin(b.geom) <= ST_XMax(a.geom)
         AND ST_YMax(b.geom) >= ST_YMin(a.geom) AND ST_YMin(b.geom) <= ST_YMax(a.geom)
@@ -220,7 +235,7 @@ function overlapRegionsQuery(table: string): string {
     )
     SELECT row_number() OVER () AS n, fa, fb, geom
     FROM pairs
-    WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > 0
+    WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > ${m2ToDegSq(MIN_ISSUE_AREA_M2).toExponential()}
   `;
 }
 
@@ -229,13 +244,13 @@ function overlapRegionsQuery(table: string): string {
 // an empty table. Returns false if even the retry failed.
 export async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<boolean> {
   try {
-    await conn.query(overlapRegionsQuery("layer_01"));
+    await conn.query(overlapRegionsQuery("tc_overlap_regions", "layer_01"));
     return true;
   } catch (e) {
     console.warn("overlap detection failed; retrying with reduced precision:", e);
     try {
       await buildReducedLayer(conn);
-      await conn.query(overlapRegionsQuery("layer_01_reduced"));
+      await conn.query(overlapRegionsQuery("tc_overlap_regions", "layer_01_reduced"));
       return true;
     } catch (e2) {
       console.warn("overlap detection failed after retry; skipping overlaps:", e2);
