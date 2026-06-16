@@ -16,6 +16,7 @@
     runFromLoaded,
     sliverVerticesGeoJSON as fetchSliverVertices,
     undoEdit,
+    type IssueKind,
     type IssueRow,
   } from "./pipeline";
 
@@ -93,6 +94,7 @@
   let issuesGeoJSON = $state<string | null>(null);
   let issues = $state<IssueRow[]>([]);
   let fixedKeys = $state<Set<string>>(new Set());
+  let detectionFailed = $state<Set<IssueKind>>(new Set());
   let noResolutionSlivers = $state<Set<string>>(new Set());
   let bounds = $state<[number, number, number, number] | null>(null);
   let totalCount = $state(0);
@@ -196,6 +198,7 @@
     issuesGeoJSON = null;
     issues = [];
     fixedKeys = new Set();
+    detectionFailed = new Set();
     noResolutionSlivers = new Set();
     bounds = null;
     totalCount = 0;
@@ -258,6 +261,7 @@
       issuesGeoJSON = result.issuesGeoJSON;
       issues = result.issues;
       fixedKeys = result.fixedKeys;
+      detectionFailed = result.detectionFailed;
       bounds = result.bounds;
       totalCount = result.totalCount;
       collapsedCount = result.collapsedCount;
@@ -296,6 +300,7 @@
       // Slivers are re-detected at the current tolerance, so refresh the table+map.
       issues = result.issues;
       issuesGeoJSON = result.issuesGeoJSON;
+      detectionFailed = result.detectionFailed;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -313,6 +318,7 @@
     issuesGeoJSON: string;
     issues: IssueRow[];
     fixedKeys: Set<string>;
+    detectionFailed: Set<IssueKind>;
     collapsedCount: number;
     originalGeoJSON: string;
   }): void {
@@ -320,6 +326,7 @@
     issuesGeoJSON = r.issuesGeoJSON;
     issues = r.issues;
     fixedKeys = r.fixedKeys;
+    detectionFailed = r.detectionFailed;
     collapsedCount = r.collapsedCount;
     originalGeoJSON = r.originalGeoJSON;
   }
@@ -643,6 +650,7 @@
           {selectedKey}
           {fixedKeys}
           {noResolutionSlivers}
+          {detectionFailed}
           onToggleSliverNoResolution={toggleSliverNoResolution}
           onSelect={selectIssue}
         />

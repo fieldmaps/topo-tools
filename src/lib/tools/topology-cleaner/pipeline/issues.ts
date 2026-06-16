@@ -1,4 +1,5 @@
 import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
+import { buildReducedLayer } from "./clean";
 import { degSqToM2, degToM, metersToDegrees } from "./units";
 
 // Sliver detection. A "sliver" is a near-miss T-junction between two polygons:
@@ -41,9 +42,15 @@ export interface IssueRow {
   bbox: [number, number, number, number];
 }
 
+export type IssueKind = "gap" | "overlap" | "sliver";
+
 export interface IssuesResult {
   rows: IssueRow[];
   geojson: string; // FeatureCollection of issue polygons, props {key, kind}
+  // Kinds whose detection query threw (even after the reduced-precision retry)
+  // and was degraded to an empty table — a 0 count for these is NOT "clean",
+  // it's "couldn't check." Distinct from a kind that ran fine and found nothing.
+  failedKinds: Set<IssueKind>;
 }
 
 async function emptyRegions(conn: AsyncDuckDBConnection, table: string, extra = ""): Promise<void> {
@@ -57,31 +64,48 @@ async function emptyRegions(conn: AsyncDuckDBConnection, table: string, extra = 
 // gaps → convert each ring back to a polygon via difference against the filled
 // exterior. Independent of ST_CoverageClean, so works even when the coverage
 // has overlaps or degenerate edges that would trip the cleaner.
-export async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<void> {
+function gapRegionsQuery(table: string): string {
+  return `--sql
+    CREATE OR REPLACE TABLE tc_gap_regions AS
+    WITH
+    union_cte AS (
+      SELECT ST_Union_Agg(geom) AS u
+      FROM ${table} WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    ),
+    parts AS (
+      SELECT (UNNEST(ST_Dump(u))).geom AS poly
+      FROM union_cte WHERE u IS NOT NULL
+    ),
+    holes AS (
+      SELECT UNNEST(ST_Dump(
+        ST_Difference(ST_MakePolygon(ST_ExteriorRing(poly)), poly)
+      )).geom AS geom
+      FROM parts WHERE ST_NumInteriorRings(poly) > 0
+    )
+    SELECT row_number() OVER () AS n, geom
+    FROM holes WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > 0
+  `;
+}
+
+// Retries against a precision-reduced copy of layer_01 on GEOS overlay failure
+// (see buildReducedLayer in clean.ts for why) before giving up and degrading to
+// an empty table. Returns false if even the retry failed — the caller surfaces
+// this so the UI can tell "detection failed" apart from "genuinely 0 gaps."
+export async function buildGapRegions(conn: AsyncDuckDBConnection): Promise<boolean> {
   try {
-    await conn.query(`--sql
-      CREATE OR REPLACE TABLE tc_gap_regions AS
-      WITH
-      union_cte AS (
-        SELECT ST_Union_Agg(geom) AS u
-        FROM layer_01 WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-      ),
-      parts AS (
-        SELECT (UNNEST(ST_Dump(u))).geom AS poly
-        FROM union_cte WHERE u IS NOT NULL
-      ),
-      holes AS (
-        SELECT UNNEST(ST_Dump(
-          ST_Difference(ST_MakePolygon(ST_ExteriorRing(poly)), poly)
-        )).geom AS geom
-        FROM parts WHERE ST_NumInteriorRings(poly) > 0
-      )
-      SELECT row_number() OVER () AS n, geom
-      FROM holes WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > 0
-    `);
+    await conn.query(gapRegionsQuery("layer_01"));
+    return true;
   } catch (e) {
-    console.warn("gap-region detection failed; skipping gaps:", e);
-    await emptyRegions(conn, "tc_gap_regions");
+    console.warn("gap-region detection failed; retrying with reduced precision:", e);
+    try {
+      await buildReducedLayer(conn);
+      await conn.query(gapRegionsQuery("layer_01_reduced"));
+      return true;
+    } catch (e2) {
+      console.warn("gap-region detection failed after retry; skipping gaps:", e2);
+      await emptyRegions(conn, "tc_gap_regions");
+      return false;
+    }
   }
 }
 
@@ -99,65 +123,82 @@ async function emptySliverRegions(conn: AsyncDuckDBConnection): Promise<void> {
 // tolM is the near-miss tolerance (the "Sliver tolerance" slider, meters): flag
 // gaps narrower than this. The edge cluster/dedup buffer reuses the same value.
 // tolM <= 0 disables sliver detection (empty table).
-export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: number): Promise<void> {
+function sliverRegionsQuery(table: string, tol: string, r: string): string {
+  return `--sql
+    CREATE OR REPLACE TABLE tc_sliver_regions AS
+    WITH ie AS (
+      -- one geometry holding all invalid edges (clean linestrings)
+      SELECT ST_CoverageInvalidEdges_Agg(geom, ${tol}) AS e
+      FROM ${table} WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    ),
+    buf AS (SELECT e, ST_Buffer(e, ${r}) AS bg FROM ie WHERE e IS NOT NULL AND NOT ST_IsEmpty(e)),
+    -- cluster the edges (overlapping buffers group the gap+overlap pair),
+    -- but keep the ACTUAL edge lines via intersection with each cluster
+    clusters AS (SELECT e, (UNNEST(ST_Dump(bg))).geom AS blob FROM buf),
+    -- already-detected overlap areas (slightly buffered) — invalid edges that
+    -- merely trace these are overlap duplicates, so erase them from the slivers
+    ov AS (
+      SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
+      FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    ),
+    -- already-detected gap areas (slightly buffered) — gap-bounding edges should
+    -- not surface as slivers too; this also removes sliver edges whose crack became
+    -- an enclosed gap after a mouth pinch, so the sliver disappears and the gap appears
+    gap_buf AS (
+      SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
+      FROM tc_gap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    ),
+    lines AS (
+      SELECT
+        CASE
+          WHEN ov.g IS NOT NULL AND gap_buf.g IS NOT NULL
+            THEN ST_Difference(ST_Difference(ST_Intersection(c.e, c.blob), ov.g), gap_buf.g)
+          WHEN ov.g IS NOT NULL
+            THEN ST_Difference(ST_Intersection(c.e, c.blob), ov.g)
+          WHEN gap_buf.g IS NOT NULL
+            THEN ST_Difference(ST_Intersection(c.e, c.blob), gap_buf.g)
+          ELSE ST_Intersection(c.e, c.blob)
+        END AS geom
+      FROM clusters c LEFT JOIN ov ON TRUE LEFT JOIN gap_buf ON TRUE
+    )
+    SELECT
+      ROW_NUMBER() OVER (ORDER BY ST_Length(geom) DESC) AS n,
+      geom,
+      0.0::DOUBLE AS area_deg2, -- a line has no area
+      0.0::DOUBLE AS mic_radius_deg, -- nor a width
+      ST_XMin(geom) AS xmin, ST_YMin(geom) AS ymin,
+      ST_XMax(geom) AS xmax, ST_YMax(geom) AS ymax
+    FROM lines WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+    ORDER BY ST_Length(geom) DESC
+  `;
+}
+
+// Retries against a precision-reduced copy of layer_01 on GEOS overlay failure
+// (see buildReducedLayer in clean.ts for why) before giving up and degrading to
+// an empty table. Returns false if even the retry failed. tolM <= 0 (sliver
+// detection turned off) returns true — that's a deliberate empty, not a failure.
+export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: number): Promise<boolean> {
   if (!(tolM > 0)) {
     await emptySliverRegions(conn);
-    return;
+    return true;
   }
   // Scientific-notation DOUBLE literals (tiny degree values; avoids DECIMAL overflow).
   const tol = metersToDegrees(tolM).toExponential();
   const r = tol; // cluster/dedup buffer = tolerance
   try {
-    await conn.query(`--sql
-      CREATE OR REPLACE TABLE tc_sliver_regions AS
-      WITH ie AS (
-        -- one geometry holding all invalid edges (clean linestrings)
-        SELECT ST_CoverageInvalidEdges_Agg(geom, ${tol}) AS e
-        FROM layer_01 WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-      ),
-      buf AS (SELECT e, ST_Buffer(e, ${r}) AS bg FROM ie WHERE e IS NOT NULL AND NOT ST_IsEmpty(e)),
-      -- cluster the edges (overlapping buffers group the gap+overlap pair),
-      -- but keep the ACTUAL edge lines via intersection with each cluster
-      clusters AS (SELECT e, (UNNEST(ST_Dump(bg))).geom AS blob FROM buf),
-      -- already-detected overlap areas (slightly buffered) — invalid edges that
-      -- merely trace these are overlap duplicates, so erase them from the slivers
-      ov AS (
-        SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
-        FROM tc_overlap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-      ),
-      -- already-detected gap areas (slightly buffered) — gap-bounding edges should
-      -- not surface as slivers too; this also removes sliver edges whose crack became
-      -- an enclosed gap after a mouth pinch, so the sliver disappears and the gap appears
-      gap_buf AS (
-        SELECT ST_Buffer(ST_Union_Agg(geom), ${r}) AS g
-        FROM tc_gap_regions WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-      ),
-      lines AS (
-        SELECT
-          CASE
-            WHEN ov.g IS NOT NULL AND gap_buf.g IS NOT NULL
-              THEN ST_Difference(ST_Difference(ST_Intersection(c.e, c.blob), ov.g), gap_buf.g)
-            WHEN ov.g IS NOT NULL
-              THEN ST_Difference(ST_Intersection(c.e, c.blob), ov.g)
-            WHEN gap_buf.g IS NOT NULL
-              THEN ST_Difference(ST_Intersection(c.e, c.blob), gap_buf.g)
-            ELSE ST_Intersection(c.e, c.blob)
-          END AS geom
-        FROM clusters c LEFT JOIN ov ON TRUE LEFT JOIN gap_buf ON TRUE
-      )
-      SELECT
-        ROW_NUMBER() OVER (ORDER BY ST_Length(geom) DESC) AS n,
-        geom,
-        0.0::DOUBLE AS area_deg2, -- a line has no area
-        0.0::DOUBLE AS mic_radius_deg, -- nor a width
-        ST_XMin(geom) AS xmin, ST_YMin(geom) AS ymin,
-        ST_XMax(geom) AS xmax, ST_YMax(geom) AS ymax
-      FROM lines WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
-      ORDER BY ST_Length(geom) DESC
-    `);
+    await conn.query(sliverRegionsQuery("layer_01", tol, r));
+    return true;
   } catch (e) {
-    console.warn("sliver detection failed; skipping slivers:", e);
-    await emptySliverRegions(conn);
+    console.warn("sliver detection failed; retrying with reduced precision:", e);
+    try {
+      await buildReducedLayer(conn);
+      await conn.query(sliverRegionsQuery("layer_01_reduced", tol, r));
+      return true;
+    } catch (e2) {
+      console.warn("sliver detection failed after retry; skipping slivers:", e2);
+      await emptySliverRegions(conn);
+      return false;
+    }
   }
 }
 
@@ -165,43 +206,67 @@ export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: numb
 // (touching borders intersect as lines and are dropped by CollectionExtract).
 // Uses bbox predicates instead of ST_Intersects in the JOIN so DuckDB plans
 // this as PIECEWISE_MERGE_JOIN rather than SPATIAL_JOIN (which OOMs in WASM).
-export async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<void> {
+function overlapRegionsQuery(table: string): string {
+  return `--sql
+    CREATE OR REPLACE TABLE tc_overlap_regions AS
+    WITH pairs AS (
+      SELECT a.fid AS fa, b.fid AS fb,
+             ST_MakeValid(ST_CollectionExtract(ST_Intersection(a.geom, b.geom), 3)) AS geom
+      FROM ${table} a JOIN ${table} b
+        ON a.fid < b.fid
+        AND ST_XMax(b.geom) >= ST_XMin(a.geom) AND ST_XMin(b.geom) <= ST_XMax(a.geom)
+        AND ST_YMax(b.geom) >= ST_YMin(a.geom) AND ST_YMin(b.geom) <= ST_YMax(a.geom)
+        AND ST_Intersects(a.geom, b.geom)
+    )
+    SELECT row_number() OVER () AS n, fa, fb, geom
+    FROM pairs
+    WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > 0
+  `;
+}
+
+// Retries against a precision-reduced copy of layer_01 on GEOS overlay failure
+// (see buildReducedLayer in clean.ts for why) before giving up and degrading to
+// an empty table. Returns false if even the retry failed.
+export async function buildOverlapRegions(conn: AsyncDuckDBConnection): Promise<boolean> {
   try {
-    await conn.query(`--sql
-      CREATE OR REPLACE TABLE tc_overlap_regions AS
-      WITH pairs AS (
-        SELECT a.fid AS fa, b.fid AS fb,
-               ST_MakeValid(ST_CollectionExtract(ST_Intersection(a.geom, b.geom), 3)) AS geom
-        FROM layer_01 a JOIN layer_01 b
-          ON a.fid < b.fid
-          AND ST_XMax(b.geom) >= ST_XMin(a.geom) AND ST_XMin(b.geom) <= ST_XMax(a.geom)
-          AND ST_YMax(b.geom) >= ST_YMin(a.geom) AND ST_YMin(b.geom) <= ST_YMax(a.geom)
-          AND ST_Intersects(a.geom, b.geom)
-      )
-      SELECT row_number() OVER () AS n, fa, fb, geom
-      FROM pairs
-      WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom) AND ST_Area(geom) > 0
-    `);
+    await conn.query(overlapRegionsQuery("layer_01"));
+    return true;
   } catch (e) {
-    console.warn("overlap detection failed; skipping overlaps:", e);
-    await emptyRegions(conn, "tc_overlap_regions", ", NULL::BIGINT AS fa, NULL::BIGINT AS fb");
+    console.warn("overlap detection failed; retrying with reduced precision:", e);
+    try {
+      await buildReducedLayer(conn);
+      await conn.query(overlapRegionsQuery("layer_01_reduced"));
+      return true;
+    } catch (e2) {
+      console.warn("overlap detection failed after retry; skipping overlaps:", e2);
+      await emptyRegions(conn, "tc_overlap_regions", ", NULL::BIGINT AS fa, NULL::BIGINT AS fb");
+      return false;
+    }
   }
 }
 
 // Rebuild the slivers at the current tolerance, then re-assemble the issues
 // table/rows/geojson. The gap + overlap region tables are inputs (built once per
 // load by runFromLoaded), so only slivers and the union are recomputed here.
+// `staticFailedKinds` carries forward the gap/overlap failure state from that
+// earlier build, since this call can't re-derive it.
 export async function rebuildSliversAndIssues(
   conn: AsyncDuckDBConnection,
   tolM: number,
+  staticFailedKinds: Set<IssueKind>,
 ): Promise<IssuesResult> {
-  await buildSliverRegions(conn, tolM);
-  return assembleIssues(conn);
+  const sliverOk = await buildSliverRegions(conn, tolM);
+  const failedKinds = new Set(staticFailedKinds);
+  if (!sliverOk) failedKinds.add("sliver");
+  return assembleIssues(conn, failedKinds);
 }
 
 // Union the three region tables into tc_issues and derive the table rows + map
 // GeoJSON. Assumes tc_gap_regions / tc_overlap_regions / tc_sliver_regions exist.
-async function assembleIssues(conn: AsyncDuckDBConnection): Promise<IssuesResult> {
+async function assembleIssues(
+  conn: AsyncDuckDBConnection,
+  failedKinds: Set<IssueKind>,
+): Promise<IssuesResult> {
   await conn.query(`--sql
     CREATE OR REPLACE TABLE tc_issues AS
     SELECT 'gap-' || n AS key, 'gap' AS kind, ST_Area(geom) AS area_deg,
@@ -267,7 +332,7 @@ async function assembleIssues(conn: AsyncDuckDBConnection): Promise<IssuesResult
       properties: { key: r.key, kind: r.kind },
     }),
   );
-  return { rows, geojson: JSON.stringify({ type: "FeatureCollection", features }) };
+  return { rows, geojson: JSON.stringify({ type: "FeatureCollection", features }), failedKinds };
 }
 
 // Check which issues are resolved in the current cleaned output (tc_clean).

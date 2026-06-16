@@ -61,17 +61,40 @@ export async function buildClean(
   `);
 }
 
-// Precision-reduced copy of the frozen input, built lazily for the clean's
-// robustness retry: snapping coordinates to a grid removes the float jitter that
-// makes ST_CoverageClean's internal overlay throw on some coverages.
+// Precision-reduced copy of layer_01, built lazily for GEOS overlay-robustness
+// retries. Real-world coverages sometimes have two adjacent features whose
+// shared boundary was digitized/exported independently and differs by float
+// jitter (e.g. two vertices ~1e-13 deg apart that were meant to coincide) — GEOS's
+// overlay throws TopologyException on this, in both ST_CoverageClean (clean.ts)
+// and the gap/overlap/sliver detection queries (issues.ts), since none of them
+// tolerate near-but-not-exact coincidence.
+//
+// 1e-10 deg (~10 microns) is the smallest tolerance that reliably resolves this:
+// tested against a real failing coverage, 1e-10 gave a stable result identical to
+// 1e-9; 1e-11 and 1e-12 still "succeeded" (no thrown exception) but produced a
+// DIFFERENT result each time — a sign of running at/below the actual noise floor,
+// where the overlay is numerically unstable rather than cleanly resolved. 10
+// microns is far below any realistic positional accuracy for administrative
+// boundary data, so this only ever collapses jitter, never real shape detail.
+const REDUCED_PRECISION_DEG = 1e-10;
+
+export async function buildReducedLayer(conn: AsyncDuckDBConnection): Promise<void> {
+  await conn.query(`--sql
+    CREATE OR REPLACE TABLE layer_01_reduced AS
+    SELECT fid, ST_MakeValid(ST_ReducePrecision(geom, ${REDUCED_PRECISION_DEG})) AS geom
+    FROM layer_01
+    WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+  `);
+}
+
 export async function buildReducedInput(conn: AsyncDuckDBConnection): Promise<void> {
+  await buildReducedLayer(conn);
   await conn.query(`--sql
     CREATE OR REPLACE TABLE tc_input_reduced AS
     SELECT
-      array_agg(ST_MakeValid(ST_ReducePrecision(geom, 1e-8)) ORDER BY fid)::GEOMETRY[] AS geoms,
-      array_agg(fid ORDER BY fid)                                                       AS fids
-    FROM layer_01
-    WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      array_agg(geom ORDER BY fid)::GEOMETRY[] AS geoms,
+      array_agg(fid ORDER BY fid)              AS fids
+    FROM layer_01_reduced
   `);
 }
 

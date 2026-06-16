@@ -7,11 +7,12 @@ import {
   buildOverlapRegions,
   checkFixedIssues,
   rebuildSliversAndIssues,
+  type IssueKind,
   type IssueRow,
 } from "./issues";
 import { metersToDegrees, setCentroidLat } from "./units";
 
-export type { IssueRow } from "./issues";
+export type { IssueKind, IssueRow } from "./issues";
 
 export type ProgressFn = (stage: number, label: string) => void;
 
@@ -40,6 +41,9 @@ export interface CleanResult {
   totalCount: number;
   collapsedCount: number;
   fixedKeys: Set<string>;
+  // Kinds whose detection query failed (even after retry) and was degraded to
+  // an empty table — a 0 count for these means "couldn't check," not "clean."
+  detectionFailed: Set<IssueKind>;
 }
 
 export interface RecleanResult {
@@ -48,11 +52,15 @@ export interface RecleanResult {
   fixedKeys: Set<string>;
   issues: IssueRow[];
   issuesGeoJSON: string;
+  detectionFailed: Set<IssueKind>;
 }
 
 // Carried from the full run to cheap re-runs.
 let totalCount = 0;
 let cachedIssues: IssueRow[] = [];
+// Gap/overlap detection is static (built once per load), so its failure state
+// is carried here for recleanOnly to merge with the live sliver failure state.
+let staticFailedKinds = new Set<IssueKind>();
 
 // Run ST_CoverageClean, retrying once against a precision-reduced input if GEOS
 // throws (typically "Result area inconsistent with overlay operation" — float
@@ -109,7 +117,7 @@ export async function recleanOnly(
 
   // Re-detect slivers at the new tolerance and rebuild the issues table first, so
   // checkFixedIssues queries a tc_issues consistent with the slider value.
-  const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM);
+  const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds);
   cachedIssues = issuesRes.rows;
 
   await cleanResilient(conn, "tc_clean", snapDeg, gapDeg);
@@ -123,6 +131,7 @@ export async function recleanOnly(
     fixedKeys,
     issues: issuesRes.rows,
     issuesGeoJSON: issuesRes.geojson,
+    detectionFailed: issuesRes.failedKinds,
   };
 }
 
@@ -146,10 +155,14 @@ export async function runFromLoaded(
   onProgress(3, "Finding gaps, overlaps & slivers");
   // Static region tables (independent of the sliders): gaps + overlaps are a
   // property of the input, built once. Best-effort — failures degrade to an empty
-  // region table, never abort the clean. Slivers are built inside recleanOnly,
-  // since they depend on the (live) sliver-tolerance slider.
-  await buildGapRegions(conn);
-  await buildOverlapRegions(conn);
+  // region table, never abort the clean (their failure state is recorded instead).
+  // Slivers are built inside recleanOnly, since they depend on the (live)
+  // sliver-tolerance slider.
+  const gapOk = await buildGapRegions(conn);
+  const overlapOk = await buildOverlapRegions(conn);
+  staticFailedKinds = new Set();
+  if (!gapOk) staticFailedKinds.add("gap");
+  if (!overlapOk) staticFailedKinds.add("overlap");
 
   onProgress(4, "Cleaning topology");
   // recleanOnly re-detects slivers at the current tolerance, assembles the issues
@@ -170,6 +183,7 @@ export async function runFromLoaded(
     totalCount,
     collapsedCount: reclean.collapsedCount,
     fixedKeys: reclean.fixedKeys,
+    detectionFailed: reclean.detectionFailed,
   };
 }
 
@@ -197,8 +211,11 @@ export interface PinchOutcome {
 // Full re-derive from the current (possibly edited) layer_01.
 async function deriveAll(conn: AsyncDuckDBConnection, opts: CleanOptions): Promise<RecleanResult> {
   totalCount = await buildInput(conn);
-  await buildGapRegions(conn);
-  await buildOverlapRegions(conn);
+  const gapOk = await buildGapRegions(conn);
+  const overlapOk = await buildOverlapRegions(conn);
+  staticFailedKinds = new Set();
+  if (!gapOk) staticFailedKinds.add("gap");
+  if (!overlapOk) staticFailedKinds.add("overlap");
   return recleanOnly(conn, opts);
 }
 

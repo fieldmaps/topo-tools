@@ -1,11 +1,12 @@
 <script lang="ts">
-  import type { IssueRow } from "./pipeline";
+  import type { IssueKind, IssueRow } from "./pipeline";
 
   let {
     rows = [],
     selectedKey = null,
     fixedKeys = new Set<string>(),
     noResolutionSlivers = new Set<string>(),
+    detectionFailed = new Set<IssueKind>(),
     onSelect,
     onHover,
     onToggleSliverNoResolution,
@@ -14,6 +15,9 @@
     selectedKey?: string | null;
     fixedKeys?: Set<string>;
     noResolutionSlivers?: Set<string>;
+    // Kinds whose detection query failed (even after retry) — a 0 count for
+    // these means "couldn't check," not "clean." See pipeline/issues.ts.
+    detectionFailed?: Set<IssueKind>;
     onSelect?: (key: string) => void;
     onHover?: (key: string | null) => void;
     onToggleSliverNoResolution?: (key: string) => void;
@@ -92,34 +96,54 @@
         type="button"
         class="tc-chip tc-chip--overlap"
         class:off={!showOverlaps}
+        class:failed={detectionFailed.has("overlap")}
         onclick={() => (showOverlaps = !showOverlaps)}
-        title="Toggle overlaps"
+        title={detectionFailed.has("overlap")
+          ? "Overlap detection failed for this coverage (even after retrying) — this count may be incomplete, not necessarily 0"
+          : "Toggle overlaps"}
       >
-        <span class="tc-key tc-key--overlap"></span> Overlaps {overlapCount}
+        <span class="tc-key tc-key--overlap"></span> Overlaps {overlapCount}{#if detectionFailed.has("overlap")}<span class="tc-fail-mark">⚠</span>{/if}
       </button>
       <button
         type="button"
         class="tc-chip tc-chip--gap"
         class:off={!showGaps}
+        class:failed={detectionFailed.has("gap")}
         onclick={() => (showGaps = !showGaps)}
-        title="Toggle gaps"
+        title={detectionFailed.has("gap")
+          ? "Gap detection failed for this coverage (even after retrying) — this count may be incomplete, not necessarily 0"
+          : "Toggle gaps"}
       >
-        <span class="tc-key tc-key--gap"></span> Gaps {gapCount}
+        <span class="tc-key tc-key--gap"></span> Gaps {gapCount}{#if detectionFailed.has("gap")}<span class="tc-fail-mark">⚠</span>{/if}
       </button>
       <button
         type="button"
         class="tc-chip tc-chip--sliver"
         class:off={!showSlivers}
+        class:failed={detectionFailed.has("sliver")}
         onclick={() => (showSlivers = !showSlivers)}
-        title="Toggle slivers"
+        title={detectionFailed.has("sliver")
+          ? "Sliver detection failed for this coverage (even after retrying) — this count may be incomplete, not necessarily 0"
+          : "Toggle slivers"}
       >
-        <span class="tc-key tc-key--sliver"></span> Slivers {sliverCount}
+        <span class="tc-key tc-key--sliver"></span> Slivers {sliverCount}{#if detectionFailed.has("sliver")}<span class="tc-fail-mark">⚠</span>{/if}
       </button>
     </div>
   </div>
 
+  {#if detectionFailed.size > 0}
+    <p class="tc-detect-warn">
+      ⚠ Detection failed for {[...detectionFailed].join(", ")} on this coverage, even after retrying —
+      those counts may be incomplete. This isn't necessarily a clean coverage; GEOS couldn't fully check it.
+    </p>
+  {/if}
+
   {#if rows.length === 0}
-    <p class="tc-empty">No issues found — the coverage is clean. 🎉</p>
+    {#if detectionFailed.size > 0}
+      <p class="tc-empty tc-empty--warn">Nothing to show — detection failed (see warning above).</p>
+    {:else}
+      <p class="tc-empty">No issues found — the coverage is clean. 🎉</p>
+    {/if}
   {:else}
     <div class="tc-scroll">
       <table class="tc-table">
@@ -228,11 +252,31 @@
   .tc-chip.off {
     opacity: 0.4;
   }
+  .tc-chip.failed {
+    border-color: #f59e0b;
+    background: #fffbeb;
+    color: #92400e;
+  }
+  .tc-fail-mark {
+    margin-left: 0.25rem;
+    color: #d97706;
+  }
+  .tc-detect-warn {
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.78rem;
+    color: #92400e;
+    background: #fffbeb;
+    border-bottom: 1px solid #fde68a;
+  }
   .tc-empty {
     padding: 1.25rem 0.9rem;
     font-size: 0.85rem;
     color: #047857;
     margin: 0;
+  }
+  .tc-empty--warn {
+    color: #92400e;
   }
   .tc-scroll {
     overflow: auto;
