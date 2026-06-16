@@ -19,9 +19,15 @@ import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 
 const SLIVER_DEFAULT = 1e-12; // ~1 cm² at the equator, in degrees²
 
+// `aTable`/`bTable` default to the loader-built keyed layers, but the
+// robustness retry (see stageOverlayResilient) points them at precision-reduced
+// copies instead — grid-snapping removes the near-degenerate edges that make
+// GEOS throw "found non-noded intersection" on some inputs.
 export async function stageOverlay(
   conn: AsyncDuckDBConnection,
   sliverEps: number = SLIVER_DEFAULT,
+  aTable = "cw_a_keyed",
+  bTable = "cw_b_keyed",
 ): Promise<void> {
   await conn.query(`DROP TABLE IF EXISTS cw_overlap`);
   await conn.query(`DROP TABLE IF EXISTS cw_a_only`);
@@ -41,7 +47,7 @@ export async function stageOverlay(
       SELECT a.fid AS a_fid,
              b.fid AS b_fid,
              ST_MakeValid(ST_CollectionExtract(ST_Intersection(a.geom, b.geom), 3)) AS geom
-      FROM cw_a_keyed a JOIN cw_b_keyed b
+      FROM ${aTable} a JOIN ${bTable} b
         ON ST_Intersects(a.geom, b.geom)
     `);
     await conn.query(`--sql
@@ -53,7 +59,7 @@ export async function stageOverlay(
       CREATE OR REPLACE TABLE cw_a_only AS
       WITH partners AS (
         SELECT a.fid AS a_fid, ST_Union_Agg(b.geom) AS pgeom
-        FROM cw_a_keyed a JOIN cw_b_keyed b ON ST_Intersects(a.geom, b.geom)
+        FROM ${aTable} a JOIN ${bTable} b ON ST_Intersects(a.geom, b.geom)
         GROUP BY a.fid
       )
       SELECT a.fid AS a_fid,
@@ -63,7 +69,7 @@ export async function stageOverlay(
                ),
                3
              ) AS geom
-      FROM cw_a_keyed a LEFT JOIN partners p ON p.a_fid = a.fid
+      FROM ${aTable} a LEFT JOIN partners p ON p.a_fid = a.fid
     `);
     await conn.query(`--sql
       DELETE FROM cw_a_only
@@ -74,7 +80,7 @@ export async function stageOverlay(
       CREATE OR REPLACE TABLE cw_b_only AS
       WITH partners AS (
         SELECT b.fid AS b_fid, ST_Union_Agg(a.geom) AS pgeom
-        FROM cw_b_keyed b JOIN cw_a_keyed a ON ST_Intersects(b.geom, a.geom)
+        FROM ${bTable} b JOIN ${aTable} a ON ST_Intersects(b.geom, a.geom)
         GROUP BY b.fid
       )
       SELECT b.fid AS b_fid,
@@ -84,7 +90,7 @@ export async function stageOverlay(
                ),
                3
              ) AS geom
-      FROM cw_b_keyed b LEFT JOIN partners p ON p.b_fid = b.fid
+      FROM ${bTable} b LEFT JOIN partners p ON p.b_fid = b.fid
     `);
     await conn.query(`--sql
       DELETE FROM cw_b_only
@@ -93,4 +99,31 @@ export async function stageOverlay(
   } finally {
     await conn.query(`SET memory_limit = '${prevMem}'`);
   }
+}
+
+// Run stageOverlay, retrying once against precision-reduced copies of the keyed
+// layers if GEOS throws (typically "found non-noded intersection" — float
+// jitter producing a degenerate zero-length edge that trips the overlay).
+// Grid-snapping the inputs removes the near-duplicate vertices that cause it.
+export async function stageOverlayResilient(
+  conn: AsyncDuckDBConnection,
+  sliverEps: number = SLIVER_DEFAULT,
+): Promise<void> {
+  try {
+    await stageOverlay(conn, sliverEps);
+  } catch (e) {
+    console.warn("overlay failed, retrying with reduced precision:", e);
+    await buildReducedKeyed(conn, "a");
+    await buildReducedKeyed(conn, "b");
+    await stageOverlay(conn, sliverEps, "cw_a_keyed_reduced", "cw_b_keyed_reduced");
+  }
+}
+
+async function buildReducedKeyed(conn: AsyncDuckDBConnection, side: "a" | "b"): Promise<void> {
+  const prefix = `cw_${side}_`;
+  await conn.query(`--sql
+    CREATE OR REPLACE TABLE ${prefix}keyed_reduced AS
+    SELECT fid, code, name, ST_MakeValid(ST_ReducePrecision(geom, 1e-8)) AS geom
+    FROM ${prefix}keyed
+  `);
 }

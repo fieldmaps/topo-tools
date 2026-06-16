@@ -1,6 +1,6 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { buildKeyed, dropPriorRun, loadSide } from "./load";
-import { stageOverlay } from "./overlay";
+import { stageOverlayResilient } from "./overlay";
 import { stageAreas } from "./areas";
 import { stageClassify, type RelClass } from "./classify";
 import { stageRender, buildOverlayGeoJSON, buildOutlineGeoJSON, computeBounds } from "./render";
@@ -63,7 +63,7 @@ export async function runFromLoaded(
 
     stage = 3;
     onProgress(3, "Overlaying boundaries");
-    await stageOverlay(conn, opts.sliverEps);
+    await stageOverlayResilient(conn, opts.sliverEps);
 
     stage = 4;
     onProgress(4, "Computing coverage");

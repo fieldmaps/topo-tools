@@ -52,6 +52,8 @@ export async function dropPriorRun(conn: AsyncDuckDBConnection): Promise<void> {
   const tables = [
     "cw_a_keyed",
     "cw_b_keyed",
+    "cw_a_keyed_reduced",
+    "cw_b_keyed_reduced",
     "cw_overlap",
     "cw_a_only",
     "cw_b_only",
