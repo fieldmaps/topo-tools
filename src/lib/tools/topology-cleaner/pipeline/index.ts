@@ -117,7 +117,9 @@ export async function recleanOnly(
 
   // Re-detect slivers at the new tolerance and rebuild the issues table first, so
   // checkFixedIssues queries a tc_issues consistent with the slider value.
-  const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds);
+  // Pass tc_clean as a fallback: it's always available at reclean time and is
+  // guaranteed valid, so the coverage validator succeeds there even when layer_01 fails.
+  const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds, "tc_clean");
   cachedIssues = issuesRes.rows;
 
   await cleanResilient(conn, "tc_clean", gapDeg);
@@ -186,6 +188,16 @@ export async function runFromLoaded(
     const targetGapM = gapWidths.length > 0 ? niceNum(Math.max(...gapWidths) * 2) : 0;
 
     await cleanResilient(conn, "tc_clean", metersToDegrees(targetGapM));
+
+    // If sliver detection failed on layer_01/layer_01_reduced, retry on tc_clean.
+    // ST_CoverageClean guarantees a valid coverage, so the validator always succeeds there.
+    // Pass staticFailedKinds (gap/overlap only, never sliver) so that a successful
+    // tc_clean detection doesn't carry forward the prior sliver-failure flag.
+    if (issuesRes.failedKinds.has("sliver")) {
+      issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds, "tc_clean");
+      cachedIssues = issuesRes.rows;
+    }
+
     const kept = await countRows(conn, "tc_clean");
     fixedKeys = await checkFixedIssues(conn, cachedIssues);
     exportCheck = await verifyExport(conn);
