@@ -48,3 +48,11 @@ export function m2ToDegSq(areaM2: number): number {
 export function degToM(deg: number): number {
   return deg * METERS_PER_DEGREE;
 }
+
+// Round n up to the nearest 1/2/5 × 10^k. Used for slider ceilings and steps.
+export function niceNum(n: number): number {
+  if (n <= 0) return 100;
+  const mag = Math.pow(10, Math.floor(Math.log10(n)));
+  const frac = n / mag;
+  return (frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10) * mag;
+}

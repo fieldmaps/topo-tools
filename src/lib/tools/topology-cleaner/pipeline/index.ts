@@ -10,7 +10,7 @@ import {
   type IssueKind,
   type IssueRow,
 } from "./issues";
-import { metersToDegrees, setCentroidLat } from "./units";
+import { metersToDegrees, niceNum, setCentroidLat } from "./units";
 import { verifyExport, type ExportCheck } from "./verify";
 
 export type { IssueKind, IssueRow } from "./issues";
@@ -166,27 +166,46 @@ export async function runFromLoaded(
   if (!gapOk) staticFailedKinds.add("gap");
   if (!overlapOk) staticFailedKinds.add("overlap");
 
-  onProgress(4, "Cleaning topology");
-  // recleanOnly re-detects slivers at the current tolerance, assembles the issues
-  // table, then runs ST_CoverageClean (snap = sliver tolerance).
-  let reclean: RecleanResult;
+  onProgress(4, "Fixing topology");
+  // Assemble issues (gap widths via ST_MaximumInscribedCircle), then run a
+  // single ST_CoverageClean at the target gap width derived from those widths.
+  // This avoids the previous 2-pass approach (gap=0 baseline + gap=max reclean).
+  let issuesRes: Awaited<ReturnType<typeof rebuildSliversAndIssues>>;
+  let cleanedGeoJSON: string;
+  let collapsedCount: number;
+  let fixedKeys: Set<string>;
+  let exportCheck: ExportCheck;
   try {
-    reclean = await recleanOnly(conn, opts);
+    issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds);
+    cachedIssues = issuesRes.rows;
+
+    const gapWidths = issuesRes.rows
+      .filter((r) => r.kind === "gap")
+      .map((r) => r.maxWidthM)
+      .filter((w) => w > 0);
+    const targetGapM = gapWidths.length > 0 ? niceNum(Math.max(...gapWidths) * 2) : 0;
+
+    await cleanResilient(conn, "tc_clean", metersToDegrees(targetGapM));
+    const kept = await countRows(conn, "tc_clean");
+    fixedKeys = await checkFixedIssues(conn, cachedIssues);
+    exportCheck = await verifyExport(conn);
+    cleanedGeoJSON = await tableToGeoJSON(conn, "tc_clean", "layer_attr");
+    collapsedCount = Math.max(0, totalCount - kept);
   } catch (e) {
     throw new PipelineError(e instanceof Error ? e.message : String(e), 4);
   }
 
   return {
     originalGeoJSON,
-    cleanedGeoJSON: reclean.cleanedGeoJSON,
-    issues: reclean.issues,
-    issuesGeoJSON: reclean.issuesGeoJSON,
+    cleanedGeoJSON,
+    issues: issuesRes.rows,
+    issuesGeoJSON: issuesRes.geojson,
     bounds,
     totalCount,
-    collapsedCount: reclean.collapsedCount,
-    fixedKeys: reclean.fixedKeys,
-    detectionFailed: reclean.detectionFailed,
-    exportCheck: reclean.exportCheck,
+    collapsedCount,
+    fixedKeys,
+    detectionFailed: issuesRes.failedKinds,
+    exportCheck,
   };
 }
 

@@ -20,12 +20,13 @@
     type IssueKind,
     type IssueRow,
   } from "./pipeline";
+  import { niceNum } from "./pipeline/units";
 
   const STAGE_LABELS = [
     "Load file",
     "Analyze coverage",
     "Find gaps, overlaps & slivers",
-    "Clean topology",
+    "Fix topology",
   ];
 
   // Input
@@ -41,14 +42,6 @@
   const SLIVER_TOL_DEFAULT_M = 10;
   const SLIVER_TOL_MAX_M = 50;
   let sliverTolM = $state(SLIVER_TOL_DEFAULT_M);
-
-  // Round x up to the nearest "nice" number (1/2/5 × 10^n).
-  function niceNum(x: number): number {
-    if (x <= 0) return 1;
-    const mag = Math.pow(10, Math.floor(Math.log10(x)));
-    const frac = x / mag;
-    return (frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10) * mag;
-  }
 
   function fmtGap(m: number): string {
     if (m === 0) return "none";
@@ -280,7 +273,6 @@
     } finally {
       running = false;
     }
-    if (cleanedGeoJSON) scheduleReclean();
   }
 
   function scheduleReclean(): void {
@@ -589,7 +581,7 @@
         {#if recleaning}
           <li class="active" role="status" aria-live="polite">
             <span class="tc-spinner" aria-hidden="true"></span>
-            <span>Updating…</span>
+            <span>{gapWidthM > 0 ? `Filling gaps up to ${fmtGap(gapWidthM)}…` : "Fixing overlaps…"}</span>
           </li>
         {/if}
       </ol>
