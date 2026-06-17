@@ -519,7 +519,11 @@ async function exportCsv(
   const path = vfsName(format.ext);
   try {
     await conn.query(`COPY (${select}) TO ${quotePath(path)} (FORMAT CSV, HEADER)`);
-    const bytes = await db.copyFileToBuffer(path);
+    const csv = await db.copyFileToBuffer(path);
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+    const bytes = new Uint8Array(bom.byteLength + csv.byteLength);
+    bytes.set(bom, 0);
+    bytes.set(new Uint8Array(csv), bom.byteLength);
     return {
       blob: toBlob(bytes, format.mime),
       filename: `${stem}${cfg.suffix}${format.ext}`,
