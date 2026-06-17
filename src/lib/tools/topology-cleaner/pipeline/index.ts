@@ -69,7 +69,7 @@ let cachedIssues: IssueRow[] = [];
 let staticFailedKinds = new Set<IssueKind>();
 
 // Run ST_CoverageClean, retrying once against a precision-reduced input if GEOS
-// still throws after the snap tolerance has been applied. With snap=1e-10 this is
+// still throws after the snap tolerance has been applied. With snap=1e-9 this is
 // a true last resort — SnappingNoder absorbs float jitter before the overlay runs
 // in the vast majority of real datasets.
 // Returns the input table actually used so callers can reuse it for a subsequent retry.
@@ -110,11 +110,12 @@ async function computeBounds(
   return null;
 }
 
-// Re-clean at the current slider values. Primary clean uses snap=1e-10: GEOS's
-// SnappingNoder absorbs float jitter (~1e-13 deg on shared boundaries) by snapping
-// vertex pairs within tolerance to the same existing coordinate — only jittered
-// vertices move, nothing else. snap=0 would skip this and fail with "Result area
-// inconsistent with overlay operation" on most real-world coverages.
+// Re-clean at the current slider values. Primary clean uses snap=1e-9 (ArcGIS XY
+// resolution for geographic coordinates): GEOS's SnappingNoder absorbs float jitter
+// (~1e-13 deg on shared boundaries) by snapping vertex pairs within tolerance to the
+// same existing coordinate — only jittered vertices move, nothing else. snap=0 would
+// skip this and fail with "Result area inconsistent with overlay operation" on most
+// real-world coverages.
 //
 // For crossing-boundary topology (polygon edges that physically cross a neighbour's
 // edge, not just a near-miss gap) GEOS collapses the affected polygon to empty rather
@@ -125,7 +126,7 @@ export async function recleanOnly(
   conn: AsyncDuckDBConnection,
   opts: CleanOptions,
 ): Promise<RecleanResult> {
-  const snapDeg = 1e-10; // SnappingNoder: only moves vertices within 10 µm of a neighbour
+  const snapDeg = 1e-9; // SnappingNoder: only moves vertices within ~100 µm of a neighbour (ArcGIS XY resolution)
   const gapDeg = metersToDegrees(opts.gapWidthM);
 
   // Re-detect slivers at the new tolerance and rebuild the issues table first, so
