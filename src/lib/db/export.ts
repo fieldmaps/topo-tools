@@ -494,7 +494,7 @@ async function exportParquet(
 
   const path = vfsName(format.ext);
   try {
-    await conn.query(`COPY (${select}) TO ${quotePath(path)} (FORMAT PARQUET, COMPRESSION ZSTD)`);
+    await conn.query(`COPY (${select}) TO ${quotePath(path)} (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'BOTH')`);
     const bytes = await db.copyFileToBuffer(path);
     return {
       blob: toBlob(bytes, format.mime),
