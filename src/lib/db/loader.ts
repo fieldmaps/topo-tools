@@ -144,21 +144,23 @@ export async function loadFile(
 
   if (group.parquet) {
     const file = group.parquet;
+    const registeredName = prefix + file.name;
     const buffer = removeGeoMetaKey(new Uint8Array(await file.arrayBuffer()));
-    await db.registerFileBuffer(file.name, buffer);
-    registered.push(file.name);
-    filePath = file.name;
+    await db.registerFileBuffer(registeredName, buffer);
+    registered.push(registeredName);
+    filePath = registeredName;
     isParquet = true;
   } else if (group.spatial) {
     const file = group.spatial;
+    const registeredName = prefix + file.name;
     const buffer = new Uint8Array(await file.arrayBuffer());
-    await db.registerFileBuffer(file.name, buffer);
-    registered.push(file.name);
-    filePath = file.name;
+    await db.registerFileBuffer(registeredName, buffer);
+    registered.push(registeredName);
+    filePath = registeredName;
   } else if (group.shapefile) {
     // Register all component files; use the .shp path for ST_Read
     const relPaths = group.shapefile.map(
-      (f) => (f as File & { webkitRelativePath: string }).webkitRelativePath || f.name,
+      (f) => prefix + ((f as File & { webkitRelativePath: string }).webkitRelativePath || f.name),
     );
     await Promise.all(
       group.shapefile.map(async (file, i) => {
