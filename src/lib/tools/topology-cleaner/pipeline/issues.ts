@@ -191,7 +191,14 @@ function sliverRegionsQuery(table: string, tol: string, r: string): string {
 // (see buildReducedLayer in clean.ts for why) before giving up and degrading to
 // an empty table. Returns false if even the retry failed. tolM <= 0 (sliver
 // detection turned off) returns true — that's a deliberate empty, not a failure.
-export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: number): Promise<boolean> {
+// `fallbackTable` (e.g. "tc_clean") is tried last: ST_CoverageClean guarantees a
+// valid coverage, so the coverage validator succeeds there even when layer_01 has
+// crossing edges that make it fail on the input.
+export async function buildSliverRegions(
+  conn: AsyncDuckDBConnection,
+  tolM: number,
+  fallbackTable?: string,
+): Promise<boolean> {
   if (!(tolM > 0)) {
     await emptySliverRegions(conn);
     return true;
@@ -210,6 +217,15 @@ export async function buildSliverRegions(conn: AsyncDuckDBConnection, tolM: numb
       return true;
     } catch (e2) {
       console.warn("sliver detection failed after retry; skipping slivers:", e2);
+      if (fallbackTable) {
+        console.warn(`sliver detection: retrying against ${fallbackTable}`);
+        try {
+          await conn.query(sliverRegionsQuery(fallbackTable, tol, r));
+          return true;
+        } catch (e3) {
+          console.warn(`sliver detection failed against ${fallbackTable}:`, e3);
+        }
+      }
       await emptySliverRegions(conn);
       return false;
     }
@@ -269,8 +285,9 @@ export async function rebuildSliversAndIssues(
   conn: AsyncDuckDBConnection,
   tolM: number,
   staticFailedKinds: Set<IssueKind>,
+  fallbackTable?: string,
 ): Promise<IssuesResult> {
-  const sliverOk = await buildSliverRegions(conn, tolM);
+  const sliverOk = await buildSliverRegions(conn, tolM, fallbackTable);
   const failedKinds = new Set(staticFailedKinds);
   if (!sliverOk) failedKinds.add("sliver");
   return assembleIssues(conn, failedKinds);
