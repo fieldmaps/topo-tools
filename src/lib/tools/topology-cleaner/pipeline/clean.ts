@@ -36,20 +36,21 @@ export async function buildInput(conn: AsyncDuckDBConnection): Promise<number> {
 // drops EMPTY elements, so collapsed polygons simply don't appear in the output
 // (the caller derives the collapsed count from the row delta).
 //
-// `snapDeg`/`gapDeg` are already in degrees (see units.ts); -1 = auto snapping,
-// 0 = no gap filling. `inputTable` is the frozen list to clean (tc_input, or the
-// precision-reduced tc_input_reduced on the robustness-retry path).
+// snap=-1 (auto): GEOS computes tolerance as dataset_diameter/1e8, which absorbs
+// float jitter and crossing-edge topology without needing an explicit value.
+// `gapDeg` is already in degrees (see units.ts); 0 = no gap filling.
+// `inputTable` is the frozen list to clean (tc_input, or the precision-reduced
+// tc_input_reduced on the robustness-retry path).
 export async function buildClean(
   conn: AsyncDuckDBConnection,
   targetTable: string,
-  snapDeg: number,
   gapDeg: number,
   inputTable = "tc_input",
 ): Promise<void> {
   await conn.query(`--sql
     CREATE OR REPLACE TABLE ${targetTable} AS
     WITH cleaned AS (
-      SELECT fids, ST_CoverageClean(geoms, ${fmt(snapDeg)}, ${fmt(gapDeg)}) AS coll
+      SELECT fids, ST_CoverageClean(geoms, -1, ${fmt(gapDeg)}) AS coll
       FROM ${inputTable}
     ),
     dumped AS (

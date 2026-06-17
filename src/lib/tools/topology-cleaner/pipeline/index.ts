@@ -69,24 +69,19 @@ let cachedIssues: IssueRow[] = [];
 let staticFailedKinds = new Set<IssueKind>();
 
 // Run ST_CoverageClean, retrying once against a precision-reduced input if GEOS
-// still throws after the snap tolerance has been applied. With snap=1e-9 this is
-// a true last resort — SnappingNoder absorbs float jitter before the overlay runs
-// in the vast majority of real datasets.
-// Returns the input table actually used so callers can reuse it for a subsequent retry.
+// still throws. Auto-snap handles float jitter and crossing-edge topology in the
+// vast majority of real datasets; precision reduction is a genuine last resort.
 async function cleanResilient(
   conn: AsyncDuckDBConnection,
   target: string,
-  snapDeg: number,
   gapDeg: number,
-): Promise<"tc_input" | "tc_input_reduced"> {
+): Promise<void> {
   try {
-    await buildClean(conn, target, snapDeg, gapDeg, "tc_input");
-    return "tc_input";
+    await buildClean(conn, target, gapDeg, "tc_input");
   } catch (e) {
     console.warn(`${target}: clean failed, retrying with reduced precision:`, e);
     await buildReducedInput(conn);
-    await buildClean(conn, target, snapDeg, gapDeg, "tc_input_reduced");
-    return "tc_input_reduced";
+    await buildClean(conn, target, gapDeg, "tc_input_reduced");
   }
 }
 
@@ -110,23 +105,14 @@ async function computeBounds(
   return null;
 }
 
-// Re-clean at the current slider values. Primary clean uses snap=1e-9 (ArcGIS XY
-// resolution for geographic coordinates): GEOS's SnappingNoder absorbs float jitter
-// (~1e-13 deg on shared boundaries) by snapping vertex pairs within tolerance to the
-// same existing coordinate — only jittered vertices move, nothing else. snap=0 would
-// skip this and fail with "Result area inconsistent with overlay operation" on most
-// real-world coverages.
-//
-// For crossing-boundary topology (polygon edges that physically cross a neighbour's
-// edge, not just a near-miss gap) GEOS collapses the affected polygon to empty rather
-// than producing a corrupt result. If that happens, we retry with snap=-1 (auto):
-// broader vertex movement but recovers the lost polygons.
+// Re-clean at the current slider values. snap=-1 (auto): GEOS computes the snap
+// tolerance as dataset_diameter/1e8, which absorbs float jitter and resolves
+// crossing-edge topology without a manually tuned value.
 // Gap + overlap regions are static (built once per load) and are NOT recomputed.
 export async function recleanOnly(
   conn: AsyncDuckDBConnection,
   opts: CleanOptions,
 ): Promise<RecleanResult> {
-  const snapDeg = 1e-9; // SnappingNoder: only moves vertices within ~100 µm of a neighbour (ArcGIS XY resolution)
   const gapDeg = metersToDegrees(opts.gapWidthM);
 
   // Re-detect slivers at the new tolerance and rebuild the issues table first, so
@@ -134,20 +120,8 @@ export async function recleanOnly(
   const issuesRes = await rebuildSliversAndIssues(conn, opts.sliverTolM, staticFailedKinds);
   cachedIssues = issuesRes.rows;
 
-  const inputUsed = await cleanResilient(conn, "tc_clean", snapDeg, gapDeg);
-
-  // Auto-snap fallback: if snap=1e-10 collapsed any polygons (crossing-edge topology),
-  // retry with snap=-1. This makes wider vertex moves but recovers lost polygons.
-  let kept = await countRows(conn, "tc_clean");
-  if (kept < totalCount) {
-    console.warn(`${totalCount - kept} polygon(s) collapsed at snap=0; retrying with auto-snap`);
-    try {
-      await buildClean(conn, "tc_clean", -1, gapDeg, inputUsed);
-      kept = await countRows(conn, "tc_clean");
-    } catch (e) {
-      console.warn("auto-snap retry also failed; keeping snap=0 result:", e);
-    }
-  }
+  await cleanResilient(conn, "tc_clean", gapDeg);
+  const kept = await countRows(conn, "tc_clean");
 
   const fixedKeys = await checkFixedIssues(conn, cachedIssues);
   const exportCheck = await verifyExport(conn);
