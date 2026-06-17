@@ -61,6 +61,7 @@ interface PairRow {
 interface PairOut extends PairRow {
   cluster_id: number;
   relationship_class: RelClass;
+  match_method: "identity" | "spatial";
 }
 
 interface SingletonOut {
@@ -328,7 +329,12 @@ export async function stageClassify(
   // Build pairs out (only passing edges)
   const pairsOut: PairOut[] = passingPairs.map((p) => {
     const id = clusterId.get(uf.find(`a:${p.a_fid}`))!;
-    return { ...p, cluster_id: id, relationship_class: clusterClass.get(id)! };
+    return {
+      ...p,
+      cluster_id: id,
+      relationship_class: clusterClass.get(id)!,
+      match_method: p.rescuedByIdentity ? "identity" : "spatial",
+    };
   });
 
   // Singletons: fids whose cluster has zero on the other side
@@ -347,7 +353,7 @@ export async function stageClassify(
   }
 
   await writeBack(conn, pairsOut, singletonsOut, clusterMembers, clusterClass);
-  await rebuildChangelog(conn, tauMatch, tauSame);
+  await rebuildChangelog(conn, opts);
   return { pairs: pairsOut, singletons: singletonsOut };
 }
 
@@ -370,7 +376,8 @@ async function writeBack(
       coverage_b DOUBLE,
       iou DOUBLE,
       cluster_id INTEGER,
-      relationship_class VARCHAR
+      relationship_class VARCHAR,
+      match_method VARCHAR
     )
   `);
 
@@ -396,7 +403,7 @@ async function writeBack(
         (p) =>
           `(${p.a_fid}, ${p.b_fid}, ${sqlNum(p.shared_area)}, ${sqlNum(p.coverage_a)}, ${sqlNum(
             p.coverage_b,
-          )}, ${sqlNum(p.iou)}, ${p.cluster_id}, ${sqlStr(p.relationship_class)})`,
+          )}, ${sqlNum(p.iou)}, ${p.cluster_id}, ${sqlStr(p.relationship_class)}, ${sqlStr(p.match_method)})`,
       )
       .join(", ");
     await conn.query(`INSERT INTO cw_pairs_classified VALUES ${values}`);
@@ -427,9 +434,11 @@ async function writeBack(
 
 export async function rebuildChangelog(
   conn: AsyncDuckDBConnection,
-  tauMatch: number,
-  tauSame: number,
+  opts: ClassifyOptions,
 ): Promise<void> {
+  const { tauMatch, tauSame, linkByCode, linkByName, linkMode } = opts;
+  const boolStr = (b: boolean) => (b ? "TRUE" : "FALSE");
+  const sqlStr = (s: string) => "'" + s.replace(/'/g, "''") + "'";
   await conn.query("DROP TABLE IF EXISTS cw_changelog");
   await conn.query(`--sql
     CREATE TABLE cw_changelog AS
@@ -439,11 +448,15 @@ export async function rebuildChangelog(
       bk.code AS code_b,
       bk.name AS name_b,
       p.relationship_class,
+      p.match_method,
       ROUND(p.coverage_a, 3) AS a_in_b,
       ROUND(p.coverage_b, 3) AS b_in_a,
       ROUND(p.iou, 3) AS similarity,
       ${tauMatch} AS threshold_match,
-      ${tauSame} AS threshold_unchanged
+      ${tauSame} AS threshold_unchanged,
+      ${boolStr(linkByCode)} AS link_by_code,
+      ${boolStr(linkByName)} AS link_by_name,
+      ${sqlStr(linkMode)} AS link_mode
     FROM cw_pairs_classified p
     LEFT JOIN cw_a_keyed ak ON ak.fid = p.a_fid
     LEFT JOIN cw_b_keyed bk ON bk.fid = p.b_fid
@@ -453,8 +466,12 @@ export async function rebuildChangelog(
     SELECT ak.code AS code_a, ak.name AS name_a,
            NULL AS code_b, NULL AS name_b,
            pc.relationship_class,
+           NULL AS match_method,
            NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity,
-           ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged
+           ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged,
+           ${boolStr(linkByCode)} AS link_by_code,
+           ${boolStr(linkByName)} AS link_by_name,
+           ${sqlStr(linkMode)} AS link_mode
     FROM cw_polygon_class pc
     JOIN (
       SELECT cluster_id, SUM(CASE WHEN side='b' THEN 1 ELSE 0 END) AS nb
@@ -468,8 +485,12 @@ export async function rebuildChangelog(
     SELECT NULL AS code_a, NULL AS name_a,
            bk.code AS code_b, bk.name AS name_b,
            pc.relationship_class,
+           NULL AS match_method,
            NULL AS a_in_b, NULL AS b_in_a, NULL AS similarity,
-           ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged
+           ${tauMatch} AS threshold_match, ${tauSame} AS threshold_unchanged,
+           ${boolStr(linkByCode)} AS link_by_code,
+           ${boolStr(linkByName)} AS link_by_name,
+           ${sqlStr(linkMode)} AS link_mode
     FROM cw_polygon_class pc
     JOIN (
       SELECT cluster_id, SUM(CASE WHEN side='a' THEN 1 ELSE 0 END) AS na

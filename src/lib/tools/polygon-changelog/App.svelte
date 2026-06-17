@@ -13,10 +13,8 @@
     type RelClass,
     type TableRow,
   } from "./pipeline";
-  import { rebuildChangelog } from "./pipeline/classify";
   import { detectColumns, type ColumnGuess } from "./pipeline/columns";
   import { buildKeyed, loadSide } from "./pipeline/load";
-  import { stageTable } from "./pipeline/table";
 
   const STAGE_LABELS = [
     "Load sources",
@@ -263,8 +261,21 @@
     try {
       await buildKeyed(duckdbState.conn, "a", aCodeCol, aNameCol);
       await buildKeyed(duckdbState.conn, "b", bCodeCol, bNameCol);
-      await rebuildChangelog(duckdbState.conn, tauMatch, tauSame);
-      tableRows = await stageTable(duckdbState.conn);
+      const result = await reclassifyOnly(duckdbState.conn, {
+        tauMatch,
+        tauSame,
+        aCodeCol,
+        aNameCol,
+        bCodeCol,
+        bNameCol,
+        linkByCode,
+        linkByName,
+        linkMode,
+      });
+      overlayGeoJSON = result.overlayGeoJSON;
+      outlineAGeoJSON = result.outlineAGeoJSON;
+      outlineBGeoJSON = result.outlineBGeoJSON;
+      tableRows = result.tableRows;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
