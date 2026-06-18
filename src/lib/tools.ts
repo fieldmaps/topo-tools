@@ -21,7 +21,7 @@ export const tools: Tool[] = [
     iconHref: "/icons/tools/edge-extender.svg",
   },
   {
-    slug: "changelog",
+    slug: "change",
     name: "Changelog",
     tagline:
       "Compare two versions of a polygon layer and classify each unit as unchanged, modified, merged, split, created, or removed.",
