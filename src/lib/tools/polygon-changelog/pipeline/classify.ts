@@ -3,6 +3,7 @@ import { UnionFind } from "../unionFind";
 
 export type RelClass =
   | "unchanged"
+  | "renamed"
   | "modified"
   | "relocated"
   | "merge"
@@ -16,6 +17,7 @@ export type RelClass =
 // their own copy of this list).
 export const REL_ORDER: RelClass[] = [
   "unchanged",
+  "renamed",
   "modified",
   "relocated",
   "merge",
@@ -27,6 +29,7 @@ export const REL_ORDER: RelClass[] = [
 
 export const REL_COLORS: Record<RelClass, string> = {
   unchanged: "#9ec5ab",
+  renamed: "#c4a86c",
   modified: "#e5b250",
   relocated: "#3fb8c4",
   merge: "#5a8fd8",
@@ -288,6 +291,8 @@ export async function stageClassify(
   // exactly one connecting edge, so this is unambiguous; it's irrelevant for
   // larger clusters (merge/split/complex stay classified as today either way).
   const clusterRescuedOnly = new Map<number, boolean>();
+  // True if any pair in this cluster has a code or name difference across versions.
+  const clusterHasAttrChange = new Map<number, boolean>();
   for (const p of passingPairs) {
     const root = uf.find(`a:${p.a_fid}`);
     const id = clusterId.get(root)!;
@@ -295,6 +300,8 @@ export async function stageClassify(
     if (p.iou > prev) clusterBestIou.set(id, p.iou);
     const prevRescuedOnly = clusterRescuedOnly.get(id) ?? true;
     clusterRescuedOnly.set(id, prevRescuedOnly && p.rescuedByIdentity);
+    const attrChanged = p.a_code !== p.b_code || p.a_name !== p.b_name;
+    clusterHasAttrChange.set(id, (clusterHasAttrChange.get(id) ?? false) || attrChanged);
   }
 
   // Classify each cluster
@@ -308,7 +315,11 @@ export async function stageClassify(
         cls = "relocated";
       } else {
         const iou = clusterBestIou.get(id) ?? 0;
-        cls = iou >= tauSame ? "unchanged" : "modified";
+        if (iou >= tauSame) {
+          cls = clusterHasAttrChange.get(id) ? "renamed" : "unchanged";
+        } else {
+          cls = "modified";
+        }
       }
     } else if (na === 1 && nb > 1) {
       cls = "split";
