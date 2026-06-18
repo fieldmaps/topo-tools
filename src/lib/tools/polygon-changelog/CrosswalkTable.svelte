@@ -298,7 +298,7 @@
         {#if tooltip.cov_b != null}
           <span class="cw-tooltip-pct">{Math.round(tooltip.cov_b * 100)}%</span><span>B in A</span>
         {/if}
-        {#if (tooltip.relClass === "unchanged" || tooltip.relClass === "modified" || tooltip.relClass === "relocated") && tooltip.iou != null}
+        {#if (tooltip.relClass === "unchanged" || tooltip.relClass === "renamed" || tooltip.relClass === "modified" || tooltip.relClass === "relocated") && tooltip.iou != null}
           <span class="cw-tooltip-pct">{Math.round(tooltip.iou * 100)}%</span><span>Similarity</span>
         {/if}
       </div>
