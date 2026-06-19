@@ -173,9 +173,14 @@
       .map((item) => item.webkitGetAsEntry())
       .filter(Boolean) as FileSystemEntry[];
     try {
-      const allFiles = (
-        await Promise.all(entries.map((e) => readEntry(e)))
-      ).flat();
+      let allFiles: File[];
+      if (entries.length > 0) {
+        allFiles = (await Promise.all(entries.map((e) => readEntry(e)))).flat();
+      } else {
+        // Fallback for synthetic drops (e.g. Playwright) that populate dataTransfer.files
+        // but not the FileSystem Entries API
+        allFiles = Array.from(event.dataTransfer?.files ?? []);
+      }
       files = filterAndSort(await expandZips(allFiles));
     } catch (e) {
       console.error("Failed to read dropped files:", e);
