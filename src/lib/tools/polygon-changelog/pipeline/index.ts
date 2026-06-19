@@ -1,12 +1,17 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 import { buildKeyed, dropPriorRun, loadSide } from "./load";
-import { stageOverlayResilient } from "./overlay";
+import { stageOverlayExact } from "./overlay";
 import { stageAreas } from "./areas";
+import { stageSample } from "./sample";
 import { stageClassify, REL_ORDER, REL_COLORS, type RelClass } from "./classify";
 import { stageRender, buildOverlayGeoJSON, buildOutlineGeoJSON, computeBounds } from "./render";
 import { stageTable, type TableRow } from "./table";
 
 export type ProgressFn = (stage: number, label: string) => void;
+
+// Which overlap method produced the result: exact geometric intersection, or the
+// point-sampling fallback used when exact throws under the WASM OverlayNG bug.
+export type ComparisonMethod = "exact" | "sampling";
 
 export class PipelineError extends Error {
   constructor(
@@ -21,7 +26,6 @@ export class PipelineError extends Error {
 export interface PipelineOptions {
   tauMatch: number;
   tauSame: number;
-  sliverEps?: number;
   aCodeCol: string[];
   aNameCol: string | null;
   bCodeCol: string[];
@@ -37,15 +41,16 @@ export interface PipelineResult {
   outlineBGeoJSON: string;
   tableRows: TableRow[];
   bounds: [number, number, number, number] | null;
+  // Set on a full run; undefined for reclassify-only (overlap unchanged).
+  method?: ComparisonMethod;
 }
 
 const STAGE_LABELS = [
   "Loading sources",
   "Building keyed layers",
-  "Overlaying boundaries",
-  "Computing coverage",
+  "Measuring overlap",
   "Classifying clusters",
-  "Rendering overlay",
+  "Rendering result",
 ];
 
 export function stageLabel(i: number): string {
@@ -65,15 +70,24 @@ export async function runFromLoaded(
     await buildKeyed(conn, "b", opts.bCodeCol, opts.bNameCol);
 
     stage = 3;
-    onProgress(3, "Overlaying boundaries");
-    await stageOverlayResilient(conn, opts.sliverEps);
+    // Prefer exact geometric overlap; fall back to point sampling only if GEOS
+    // OverlayNG throws under the WASM floating-point bug (near-coincident edges).
+    let method: ComparisonMethod;
+    try {
+      onProgress(3, "Measuring overlap (exact)");
+      await stageOverlayExact(conn);
+      await stageAreas(conn);
+      method = "exact";
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`exact overlay failed (WASM OverlayNG); falling back to point sampling: ${msg}`);
+      onProgress(3, "Measuring overlap (sampling)");
+      await stageSample(conn);
+      method = "sampling";
+    }
 
     stage = 4;
-    onProgress(4, "Computing coverage");
-    await stageAreas(conn);
-
-    stage = 5;
-    onProgress(5, "Classifying clusters");
+    onProgress(4, "Classifying clusters");
     await stageClassify(conn, {
       tauMatch: opts.tauMatch,
       tauSame: opts.tauSame,
@@ -82,8 +96,8 @@ export async function runFromLoaded(
       linkMode: opts.linkMode,
     });
 
-    stage = 6;
-    onProgress(6, "Rendering overlay");
+    stage = 5;
+    onProgress(5, "Rendering result");
     await stageRender(conn);
     const [overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds] = await Promise.all(
       [
@@ -95,7 +109,7 @@ export async function runFromLoaded(
       ],
     );
 
-    return { overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds };
+    return { overlayGeoJSON, outlineAGeoJSON, outlineBGeoJSON, tableRows, bounds, method };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new PipelineError(msg, stage);

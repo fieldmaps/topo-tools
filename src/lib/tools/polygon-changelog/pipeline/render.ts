@@ -1,17 +1,14 @@
 import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
 
-// Builds cw_overlay_render — the union of overlap pieces and the two side-only
-// difference pieces, each tagged with cluster_id + relationship_class. This is
-// the table that the map renders as the choropleth overlay.
-//
-// Sub-piece selection:
-//  - cw_overlap → cluster_id from cw_polygon_class on the A side (an overlap
-//    piece always has both a_fid and b_fid; either side resolves to the same
-//    cluster). relationship_class likewise carried by the polygon-class row.
-//  - cw_a_only  → must come from a 'removed' cluster (or, defensively, from a
-//    cluster whose A-only sub-piece sits inside a "modified" cluster where the
-//    polygon didn't fully overlap). The cluster_id is the A polygon's cluster.
-//  - cw_b_only  → analogous to cw_a_only on the B side.
+// Builds cw_overlay_render — the polygons the map fills, each tagged with
+// cluster_id + relationship_class. Since the overlap is measured by sampling (no
+// exact intersection geometry exists), we render whole units coloured by class
+// rather than intersection slivers:
+//  - every B-side unit (covers unchanged / modified / renamed / split / merge /
+//    created — anything still present in the new version), and
+//  - A-side units classed 'removed' (gone in the new version, so no B polygon to
+//    stand in for them).
+// Together these tile the full area exactly once, coloured by what happened.
 
 export async function stageRender(conn: AsyncDuckDBConnection): Promise<void> {
   await conn.query("DROP TABLE IF EXISTS cw_overlay_render");
@@ -19,41 +16,27 @@ export async function stageRender(conn: AsyncDuckDBConnection): Promise<void> {
   await conn.query(`--sql
     CREATE TABLE cw_overlay_render AS
     SELECT
-      ST_Multi(o.geom) AS geom,
+      ST_Multi(k.geom) AS geom,
       pc.cluster_id AS cluster_id,
       pc.relationship_class AS relationship_class,
-      'both' AS piece_side,
-      o.a_fid AS a_fid,
-      o.b_fid AS b_fid
-    FROM cw_overlap o
-    LEFT JOIN cw_polygon_class pc
-      ON pc.side = 'a' AND pc.fid = o.a_fid
-
-    UNION ALL
-
-    SELECT
-      ST_Multi(ao.geom) AS geom,
-      pc.cluster_id AS cluster_id,
-      pc.relationship_class AS relationship_class,
-      'a_only' AS piece_side,
-      ao.a_fid AS a_fid,
-      NULL::INTEGER AS b_fid
-    FROM cw_a_only ao
-    LEFT JOIN cw_polygon_class pc
-      ON pc.side = 'a' AND pc.fid = ao.a_fid
-
-    UNION ALL
-
-    SELECT
-      ST_Multi(bo.geom) AS geom,
-      pc.cluster_id AS cluster_id,
-      pc.relationship_class AS relationship_class,
-      'b_only' AS piece_side,
+      'b' AS piece_side,
       NULL::INTEGER AS a_fid,
-      bo.b_fid AS b_fid
-    FROM cw_b_only bo
-    LEFT JOIN cw_polygon_class pc
-      ON pc.side = 'b' AND pc.fid = bo.b_fid
+      k.fid AS b_fid
+    FROM cw_b_keyed k
+    JOIN cw_polygon_class pc ON pc.side = 'b' AND pc.fid = k.fid
+
+    UNION ALL
+
+    SELECT
+      ST_Multi(k.geom) AS geom,
+      pc.cluster_id AS cluster_id,
+      pc.relationship_class AS relationship_class,
+      'a' AS piece_side,
+      k.fid AS a_fid,
+      NULL::INTEGER AS b_fid
+    FROM cw_a_keyed k
+    JOIN cw_polygon_class pc ON pc.side = 'a' AND pc.fid = k.fid
+    WHERE pc.relationship_class = 'removed'
   `);
 }
 

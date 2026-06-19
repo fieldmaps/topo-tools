@@ -12,6 +12,7 @@
     REL_ORDER,
     type RelClass,
     type TableRow,
+    type ComparisonMethod,
   } from "./pipeline";
   import { detectColumns, type ColumnGuess } from "./pipeline/columns";
   import { buildKeyed, loadSide } from "./pipeline/load";
@@ -19,10 +20,9 @@
   const STAGE_LABELS = [
     "Load sources",
     "Build keyed layers",
-    "Overlay boundaries",
-    "Compute coverage",
+    "Measure overlap",
     "Classify clusters",
-    "Render overlay",
+    "Render result",
   ];
 
   // Input state
@@ -63,6 +63,9 @@
   let errorStage = $state(0);
   let stageLabel = $state("");
   let error = $state<string | null>(null);
+
+  // Which overlap method the last full run used (null until a run completes).
+  let comparisonMethod = $state<ComparisonMethod | null>(null);
 
   // Results
   let overlayGeoJSON = $state<string | null>(null);
@@ -232,6 +235,7 @@
       outlineBGeoJSON = result.outlineBGeoJSON;
       tableRows = result.tableRows;
       bounds = result.bounds;
+      if (result.method) comparisonMethod = result.method;
       currentStage = 7;
       stageLabel = "Done";
       exposeDebugHook();
@@ -592,6 +596,24 @@
     <section class="cw-step">
       <h2 class="cw-step-heading">Thresholds</h2>
 
+      {#if comparisonMethod === "sampling"}
+        <div class="cw-method cw-method--sampling">
+          <span class="cw-method-label">
+            Comparison method: <strong>point sampling</strong> (approximate, ±~1%)
+          </span>
+          <button type="button" class="cw-method-info" aria-label="About the comparison method">ⓘ</button>
+          <span class="cw-tooltip" role="tooltip">
+            Exact geometric intersection failed for this dataset — GEOS OverlayNG hits a
+            floating-point bug in the browser's WASM engine on near-coincident boundaries (common
+            when two versions are independent digitizations of the same coverage). Overlap was
+            instead estimated by <strong>point sampling</strong>: a 32×32 grid of points per unit,
+            counted into the other version's polygons. Coverage and IoU are estimates (≈±0.6% on
+            tested data); the unchanged/modified line is reliable up to a 99% threshold, so the
+            slider is capped there.
+          </span>
+        </div>
+      {/if}
+
       <div class="cw-match-toggle" role="group" aria-label="Matching mode">
         <button
           class="cw-match-btn"
@@ -639,15 +661,16 @@
           <input
             type="range"
             min="0"
-            max="1"
+            max="0.99"
             step="0.01"
             bind:value={tauSame}
             oninput={scheduleReclassify}
             disabled={running}
           />
           <p class="cw-hint">
-            How much a 1:1 matched pair must overlap to be classified as <em>unchanged</em> rather
-            than <em>modified</em>.
+            How much a 1:1 matched pair must overlap (sampled IoU) to be classified as
+            <em>unchanged</em> rather than <em>modified</em>. Capped at 99% — sampling can't
+            reliably distinguish near-identical from bit-identical geometry.
           </p>
         </label>
         {#if linkByCode && linkByName}
@@ -898,6 +921,76 @@
     color: #6b7280;
     margin: 0;
     line-height: 1.3;
+  }
+  .cw-method {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.75rem;
+    color: #4b5563;
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    margin: 0 0 0.75rem;
+  }
+  .cw-method--sampling {
+    background: #fef3c7;
+    border-color: #fcd34d;
+    color: #78350f;
+  }
+  .cw-method-label strong {
+    color: #1f2937;
+  }
+  .cw-method--sampling .cw-method-label strong {
+    color: #78350f;
+  }
+  .cw-method-info {
+    margin-left: auto;
+    flex-shrink: 0;
+    width: 1.1rem;
+    height: 1.1rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: none;
+    color: #6b7280;
+    font-size: 0.85rem;
+    cursor: help;
+    padding: 0;
+  }
+  .cw-method-info:hover,
+  .cw-method-info:focus-visible {
+    color: #2563eb;
+  }
+  .cw-tooltip {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 0.3rem;
+    z-index: 30;
+    background: #1f2937;
+    color: #f3f4f6;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    padding: 0.55rem 0.7rem;
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s ease;
+    pointer-events: none;
+  }
+  .cw-tooltip strong {
+    color: #fff;
+  }
+  .cw-method:hover .cw-tooltip,
+  .cw-method:focus-within .cw-tooltip {
+    opacity: 1;
+    visibility: visible;
   }
   .cw-advanced {
     margin-top: 0.5rem;
