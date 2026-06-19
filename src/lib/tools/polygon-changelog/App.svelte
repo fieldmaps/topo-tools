@@ -661,16 +661,17 @@
           <input
             type="range"
             min="0"
-            max="0.99"
+            max={comparisonMethod === "sampling" ? "0.99" : "1"}
             step="0.01"
             bind:value={tauSame}
             oninput={scheduleReclassify}
             disabled={running}
           />
           <p class="cw-hint">
-            How much a 1:1 matched pair must overlap (sampled IoU) to be classified as
-            <em>unchanged</em> rather than <em>modified</em>. Capped at 99% — sampling can't
-            reliably distinguish near-identical from bit-identical geometry.
+            How much a 1:1 matched pair must overlap (IoU) to be classified as
+            <em>unchanged</em> rather than <em>modified</em>.{#if comparisonMethod === "sampling"}
+              {" "}Capped at 99% — sampling can't reliably distinguish near-identical from bit-identical geometry.
+            {/if}
           </p>
         </label>
         {#if linkByCode && linkByName}
@@ -685,7 +686,7 @@
       </details>
     </section>
 
-    {#if currentStage > 0 || errorStage > 0}
+    {#if running || errorStage > 0}
       <ol class="cw-stages">
         {#each STAGE_LABELS as label, i}
           {@const status = stageStatus(i)}
@@ -825,6 +826,12 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
+  }
+  .cw-dropzones :global(.drop-zone) {
+    padding: 0.6rem 0.75rem;
+  }
+  .cw-dropzones :global(.drop-message) {
+    font-size: 0.8rem;
   }
   .cw-zone-label {
     display: block;
