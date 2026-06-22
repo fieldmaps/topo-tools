@@ -1,0 +1,53 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "id": 1, "name": "Region A" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[10, 48], [11, 48], [11, 49], [10, 49], [10, 48]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 2, "name": "Region B" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[11, 48], [12, 48], [12, 49], [11, 49], [11, 48]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 3, "name": "Region C" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[12, 48], [13, 48], [13, 49], [12, 49], [12, 48]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 4, "name": "Region D" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[10, 49], [11, 49], [11, 50], [10, 50], [10, 49]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 5, "name": "Region E" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[11, 49], [12, 49], [12, 50], [11, 50], [11, 49]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": 6, "name": "Region F" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[12, 49], [13, 49], [13, 50], [12, 50], [12, 49]]]
+      }
+    }
+  ]
+}
