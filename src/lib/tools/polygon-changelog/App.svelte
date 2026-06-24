@@ -36,12 +36,10 @@
   // Auto-detected columns + user selections
   let colsA = $state<ColumnGuess | null>(null);
   let colsB = $state<ColumnGuess | null>(null);
-  let aCodeSlots = $state<(string | null)[]>([null]);
+  let aCodeCol = $state<string | null>(null);
   let aNameCol = $state<string | null>(null);
-  let bCodeSlots = $state<(string | null)[]>([null]);
+  let bCodeCol = $state<string | null>(null);
   let bNameCol = $state<string | null>(null);
-  const aCodeCol = $derived(aCodeSlots.filter((s): s is string => s !== null));
-  const bCodeCol = $derived(bCodeSlots.filter((s): s is string => s !== null));
 
   // Thresholds
   let tauMatch = $state(0.8);
@@ -53,7 +51,7 @@
   let matchMode = $state<"geometry" | "identity">("geometry");
   let linkMode = $state<"either" | "both">("either");
   const linkByCode = $derived(
-    matchMode === "identity" && aCodeCol.length > 0 && bCodeCol.length > 0,
+    matchMode === "identity" && aCodeCol !== null && bCodeCol !== null,
   );
   const linkByName = $derived(matchMode === "identity" && aNameCol !== null && bNameCol !== null);
 
@@ -133,7 +131,7 @@
     untrack(() => {
       if (loadingSide === "a") return;
       colsA = null;
-      aCodeSlots = [null];
+      aCodeCol = null;
       aNameCol = null;
       loadedA = false;
       resetResults();
@@ -147,7 +145,7 @@
     untrack(() => {
       if (loadingSide === "b") return;
       colsB = null;
-      bCodeSlots = [null];
+      bCodeCol = null;
       bNameCol = null;
       loadedB = false;
       resetResults();
@@ -184,14 +182,27 @@
       const cols = await detectColumns(duckdbState.conn!, `cw_${side}_layer_attr`);
       if (side === "a") {
         colsA = cols;
-        aCodeSlots = [cols.code ?? null];
+        aCodeCol = cols.code ?? null;
         aNameCol = cols.name;
         loadedA = true;
       } else {
         colsB = cols;
-        bCodeSlots = [cols.code ?? null];
+        bCodeCol = cols.code ?? null;
         bNameCol = cols.name;
         loadedB = true;
+      }
+      if (loadedA && loadedB) {
+        const bboxResult = await duckdbState.conn!.query(`
+          SELECT MIN(ST_XMin(geom)) AS xmin, MIN(ST_YMin(geom)) AS ymin,
+                 MAX(ST_XMax(geom)) AS xmax, MAX(ST_YMax(geom)) AS ymax
+          FROM (SELECT geom FROM cw_a_layer_01 UNION ALL SELECT geom FROM cw_b_layer_01)
+          WHERE geom IS NOT NULL
+        `);
+        const bboxRow = bboxResult.toArray()[0] as Record<string, number>;
+        const { xmin, ymin, xmax, ymax } = bboxRow;
+        if (isFinite(xmin) && isFinite(ymin) && isFinite(xmax) && isFinite(ymax)) {
+          bounds = [xmin, ymin, xmax, ymax];
+        }
       }
     } catch (e) {
       loadError = e instanceof Error ? e.message : String(e);
@@ -217,9 +228,9 @@
         {
           tauMatch,
           tauSame,
-          aCodeCol,
+          aCodeCol: aCodeCol ? [aCodeCol] : [],
           aNameCol,
-          bCodeCol,
+          bCodeCol: bCodeCol ? [bCodeCol] : [],
           bNameCol,
           linkByCode,
           linkByName,
@@ -249,8 +260,8 @@
   }
 
   $effect(() => {
-    const _a = aCodeSlots;
-    const _b = bCodeSlots;
+    const _a = aCodeCol;
+    const _b = bCodeCol;
     const _an = aNameCol;
     const _bn = bNameCol;
     untrack(() => {
@@ -263,14 +274,14 @@
     if (!duckdbState.conn || !overlayGeoJSON) return;
     running = true;
     try {
-      await buildKeyed(duckdbState.conn, "a", aCodeCol, aNameCol);
-      await buildKeyed(duckdbState.conn, "b", bCodeCol, bNameCol);
+      await buildKeyed(duckdbState.conn, "a", aCodeCol ? [aCodeCol] : [], aNameCol);
+      await buildKeyed(duckdbState.conn, "b", bCodeCol ? [bCodeCol] : [], bNameCol);
       const result = await reclassifyOnly(duckdbState.conn, {
         tauMatch,
         tauSame,
-        aCodeCol,
+        aCodeCol: aCodeCol ? [aCodeCol] : [],
         aNameCol,
-        bCodeCol,
+        bCodeCol: bCodeCol ? [bCodeCol] : [],
         bNameCol,
         linkByCode,
         linkByName,
@@ -304,9 +315,9 @@
       const result = await reclassifyOnly(duckdbState.conn!, {
         tauMatch,
         tauSame,
-        aCodeCol,
+        aCodeCol: aCodeCol ? [aCodeCol] : [],
         aNameCol,
-        bCodeCol,
+        bCodeCol: bCodeCol ? [bCodeCol] : [],
         bNameCol,
         linkByCode,
         linkByName,
@@ -487,112 +498,27 @@
       {#if loadingSide === "a"}<p class="cw-status">Loading Version A…</p>{/if}
       {#if loadingSide === "b"}<p class="cw-status">Loading Version B…</p>{/if}
       {#if loadError}<div class="cw-error">{loadError}</div>{/if}
+      {#if running || errorStage > 0}
+        <ol class="cw-stages">
+          {#each STAGE_LABELS as label, i}
+            {@const status = stageStatus(i)}
+            <li class={status}>
+              {#if status === "error"}
+                <span class="cw-stage-x">✕</span>
+              {:else}
+                <span class="cw-stage-dot"></span>
+              {/if}
+              <span class="cw-stage-label">
+                {i + 1 === currentStage && stageLabel ? stageLabel : label}
+              </span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+      {#if error}<div class="cw-error">{error}</div>{/if}
     </section>
 
-    {#if loadedA || loadedB}
-      <section class="cw-step">
-        <h2 class="cw-step-heading">Pick code &amp; name columns</h2>
-        <div class="cw-cols">
-          {#if colsA}
-            <fieldset class="cw-fieldset">
-              <legend>Version A</legend>
-              <label class="cw-field cw-field--code">
-                <span>Code</span>
-                <div class="cw-code-slots">
-                  {#each aCodeSlots as slot, i}
-                    <div class="cw-code-slot">
-                      <select
-                        value={slot ?? ""}
-                        onchange={(e) => {
-                          const val = (e.target as HTMLSelectElement).value || null;
-                          aCodeSlots = aCodeSlots.map((s, j) => (j === i ? val : s));
-                        }}
-                        disabled={running}
-                      >
-                        <option value="">(none)</option>
-                        {#each colsA.all as col (col)}<option value={col}>{col}</option>{/each}
-                      </select>
-                      {#if aCodeSlots.length > 1}
-                        <button
-                          type="button"
-                          class="cw-slot-remove"
-                          onclick={() => { aCodeSlots = aCodeSlots.filter((_, j) => j !== i); }}
-                          disabled={running}
-                        >×</button>
-                      {/if}
-                    </div>
-                  {/each}
-                  {#if aCodeSlots[aCodeSlots.length - 1] !== null}
-                    <button
-                      type="button"
-                      class="cw-slot-add"
-                      onclick={() => { aCodeSlots = [...aCodeSlots, null]; }}
-                      disabled={running}
-                    >+ add column</button>
-                  {/if}
-                </div>
-              </label>
-              <label class="cw-field">
-                <span>Name</span>
-                <select bind:value={aNameCol} disabled={running}>
-                  <option value={null}>(none)</option>
-                  {#each colsA.all as col (col)}<option value={col}>{col}</option>{/each}
-                </select>
-              </label>
-            </fieldset>
-          {/if}
-          {#if colsB}
-            <fieldset class="cw-fieldset">
-              <legend>Version B</legend>
-              <label class="cw-field cw-field--code">
-                <span>Code</span>
-                <div class="cw-code-slots">
-                  {#each bCodeSlots as slot, i}
-                    <div class="cw-code-slot">
-                      <select
-                        value={slot ?? ""}
-                        onchange={(e) => {
-                          const val = (e.target as HTMLSelectElement).value || null;
-                          bCodeSlots = bCodeSlots.map((s, j) => (j === i ? val : s));
-                        }}
-                        disabled={running}
-                      >
-                        <option value="">(none)</option>
-                        {#each colsB.all as col (col)}<option value={col}>{col}</option>{/each}
-                      </select>
-                      {#if bCodeSlots.length > 1}
-                        <button
-                          type="button"
-                          class="cw-slot-remove"
-                          onclick={() => { bCodeSlots = bCodeSlots.filter((_, j) => j !== i); }}
-                          disabled={running}
-                        >×</button>
-                      {/if}
-                    </div>
-                  {/each}
-                  {#if bCodeSlots[bCodeSlots.length - 1] !== null}
-                    <button
-                      type="button"
-                      class="cw-slot-add"
-                      onclick={() => { bCodeSlots = [...bCodeSlots, null]; }}
-                      disabled={running}
-                    >+ add column</button>
-                  {/if}
-                </div>
-              </label>
-              <label class="cw-field">
-                <span>Name</span>
-                <select bind:value={bNameCol} disabled={running}>
-                  <option value={null}>(none)</option>
-                  {#each colsB.all as col (col)}<option value={col}>{col}</option>{/each}
-                </select>
-              </label>
-            </fieldset>
-          {/if}
-        </div>
-      </section>
-    {/if}
-
+    {#if overlayGeoJSON || errorStage > 0}
     <section class="cw-step">
       <h2 class="cw-step-heading">Thresholds</h2>
 
@@ -686,25 +612,50 @@
       </details>
     </section>
 
-    {#if running || errorStage > 0}
-      <ol class="cw-stages">
-        {#each STAGE_LABELS as label, i}
-          {@const status = stageStatus(i)}
-          <li class={status}>
-            {#if status === "error"}
-              <span class="cw-stage-x">✕</span>
-            {:else}
-              <span class="cw-stage-dot"></span>
-            {/if}
-            <span class="cw-stage-label">
-              {i + 1 === currentStage && stageLabel ? stageLabel : label}
-            </span>
-          </li>
-        {/each}
-      </ol>
+    <section class="cw-step">
+      <h2 class="cw-step-heading">Pick code &amp; name columns</h2>
+        <div class="cw-cols">
+          {#if colsA}
+            <fieldset class="cw-fieldset">
+              <legend>Version A</legend>
+              <label class="cw-field">
+                <span>Code</span>
+                <select bind:value={aCodeCol} disabled={running}>
+                  <option value={null}>(none)</option>
+                  {#each colsA.all as col (col)}<option value={col}>{col}</option>{/each}
+                </select>
+              </label>
+              <label class="cw-field">
+                <span>Name</span>
+                <select bind:value={aNameCol} disabled={running}>
+                  <option value={null}>(none)</option>
+                  {#each colsA.all as col (col)}<option value={col}>{col}</option>{/each}
+                </select>
+              </label>
+            </fieldset>
+          {/if}
+          {#if colsB}
+            <fieldset class="cw-fieldset">
+              <legend>Version B</legend>
+              <label class="cw-field">
+                <span>Code</span>
+                <select bind:value={bCodeCol} disabled={running}>
+                  <option value={null}>(none)</option>
+                  {#each colsB.all as col (col)}<option value={col}>{col}</option>{/each}
+                </select>
+              </label>
+              <label class="cw-field">
+                <span>Name</span>
+                <select bind:value={bNameCol} disabled={running}>
+                  <option value={null}>(none)</option>
+                  {#each colsB.all as col (col)}<option value={col}>{col}</option>{/each}
+                </select>
+              </label>
+            </fieldset>
+          {/if}
+        </div>
+    </section>
     {/if}
-
-    {#if error}<div class="cw-error">{error}</div>{/if}
 
     {#if overlayGeoJSON}
       <section class="cw-step">
@@ -747,6 +698,7 @@
         outlineAGeojson={outlineAGeoJSON}
         outlineBGeojson={outlineBGeoJSON}
         {bounds}
+        processing={(loadedA && loadedB) || running}
         {hoveredClusterId}
         {hoveredFid}
         {visibleClasses}
@@ -871,48 +823,6 @@
     border: 1px solid #d1d5db;
     border-radius: 3px;
     background: #fff;
-  }
-  .cw-field--code {
-    align-items: start;
-  }
-  .cw-code-slots {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-  .cw-code-slot {
-    display: flex;
-    gap: 0.25rem;
-    align-items: center;
-  }
-  .cw-code-slot select {
-    flex: 1;
-  }
-  .cw-slot-remove {
-    padding: 0.15rem 0.4rem;
-    font-size: 0.8rem;
-    line-height: 1;
-    border: 1px solid #d1d5db;
-    border-radius: 3px;
-    background: #fff;
-    color: #9ca3af;
-    cursor: pointer;
-  }
-  .cw-slot-remove:hover:not(:disabled) {
-    color: #b91c1c;
-    border-color: #fca5a5;
-  }
-  .cw-slot-add {
-    font-size: 0.75rem;
-    color: #6b7280;
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    text-align: left;
-  }
-  .cw-slot-add:hover:not(:disabled) {
-    color: #374151;
   }
   .cw-slider {
     display: flex;
@@ -1062,6 +972,17 @@
     font-size: 0.85rem;
     color: #4b5563;
     margin: 0;
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
   }
   .cw-error {
     padding: 0.6rem 0.8rem;
@@ -1093,6 +1014,7 @@
   .cw-stages li.active {
     color: #1d4ed8;
     font-weight: 600;
+    animation: pulse 1s ease-in-out infinite;
   }
   .cw-stages li.error {
     color: #b91c1c;

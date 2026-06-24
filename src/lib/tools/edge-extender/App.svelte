@@ -199,7 +199,7 @@
         </div>
       </details>
 
-      {#if currentStage > 0 || errorStage > 0}
+      {#if running || errorStage > 0}
         <ol class="stages">
           {#each STAGE_LABELS as label, i}
             {@const status = stageStatus(i)}
@@ -231,6 +231,7 @@
       {/if}
     </section>
 
+    {#if resultGeoJSON}
     <section class="step">
       <h2 class="step-heading">
         Step 2 — Clip to a known boundary <span class="optional">(optional)</span>
@@ -260,6 +261,7 @@
         />
       {/if}
     </section>
+    {/if}
 
     <p class="privacy">Your files never leave your device.</p>
   </aside>
@@ -270,6 +272,7 @@
       originalGeojson={originalGeoJSON}
       clipGeojson={clipGeoJSON}
       bounds={resultBounds}
+      processing={running}
       registerClear={(fn: () => void) => { clearMap = fn; }}
       registerClearClip={(fn: () => void) => { clearClip = fn; }}
     />
@@ -447,7 +450,7 @@
     flex-shrink: 0;
   }
 
-  .stages li.active .stage-dot {
+  .stages li.active {
     animation: pulse 1s ease-in-out infinite;
   }
 

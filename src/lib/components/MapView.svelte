@@ -13,6 +13,7 @@
     originalGeojson = null,
     clipGeojson = null,
     bounds = null,
+    processing = false,
     registerClear = undefined,
     registerClearClip = undefined,
   }: {
@@ -20,6 +21,7 @@
     originalGeojson?: string | null;
     clipGeojson?: string | null;
     bounds?: [number, number, number, number] | null;
+    processing?: boolean;
     registerClear?: (fn: () => void) => void;
     registerClearClip?: (fn: () => void) => void;
   } = $props();
@@ -30,6 +32,10 @@
   let origBlobUrl: string | undefined;
   let clipBlobUrl: string | undefined;
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
+
+  $effect(() => {
+    if (processing) stopSpin();
+  });
 
   // Dedicated effect for bounds — fires whenever bounds changes, independent of data effects.
   $effect(() => {

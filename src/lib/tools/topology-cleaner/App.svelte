@@ -231,6 +231,16 @@
     try {
       await loadFile(duckdbState.db!, duckdbState.conn!, files);
       loaded = true;
+      const bboxResult = await duckdbState.conn!.query(`
+        SELECT MIN(ST_XMin(geom)) AS xmin, MIN(ST_YMin(geom)) AS ymin,
+               MAX(ST_XMax(geom)) AS xmax, MAX(ST_YMax(geom)) AS ymax
+        FROM layer_01 WHERE geom IS NOT NULL
+      `);
+      const bboxRow = bboxResult.toArray()[0] as Record<string, number>;
+      const { xmin, ymin, xmax, ymax } = bboxRow;
+      if (isFinite(xmin) && isFinite(ymin) && isFinite(xmax) && isFinite(ymax)) {
+        bounds = [xmin, ymin, xmax, ymax];
+      }
     } catch (e) {
       loadError = e instanceof Error ? e.message : String(e);
       currentStage = 0;
@@ -567,7 +577,7 @@
       </section>
     {/if}
 
-    {#if currentStage > 0 || errorStage > 0}
+    {#if loading || running || recleaning || errorStage > 0}
       <ol class="tc-stages">
         {#each STAGE_LABELS as label, i}
           {@const status = stageStatus(i)}
@@ -677,6 +687,7 @@
         {focusBbox}
         {selectedKey}
         {showSide}
+        processing={loading || running}
         onIssueClick={onMapIssueClick}
         {onBoxSelect}
       />
@@ -849,6 +860,12 @@
   .tc-stages li.active {
     color: #1d4ed8;
     font-weight: 600;
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
   }
   .tc-stages li.error {
     color: #b91c1c;
