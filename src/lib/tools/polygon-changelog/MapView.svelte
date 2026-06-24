@@ -17,6 +17,7 @@
     outlineAGeojson = null,
     outlineBGeojson = null,
     bounds = null,
+    processing = false,
     hoveredClusterId = null,
     hoveredFid = null,
     visibleClasses = null,
@@ -28,6 +29,7 @@
     outlineAGeojson?: string | null;
     outlineBGeojson?: string | null;
     bounds?: [number, number, number, number] | null;
+    processing?: boolean;
     hoveredClusterId?: number | null;
     hoveredFid?: number | null;
     visibleClasses?: Set<string> | null;
@@ -44,6 +46,10 @@
   let styleReady = false;
   let sidePending: number | undefined;
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
+
+  $effect(() => {
+    if (processing) stopSpin();
+  });
 
   function fillColorExpr(): ExpressionSpecification {
     const stops = REL_ORDER.flatMap((c) => [c, REL_COLORS[c]]);

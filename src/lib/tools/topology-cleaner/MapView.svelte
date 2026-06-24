@@ -22,6 +22,7 @@
     focusBbox = null,
     selectedKey = null,
     showSide = "b" as "a" | "b",
+    processing = false,
     onIssueClick,
     onBoxSelect,
   }: {
@@ -35,6 +36,7 @@
     focusBbox?: [number, number, number, number] | null;
     selectedKey?: string | null;
     showSide?: "a" | "b";
+    processing?: boolean;
     onIssueClick?: (key: string | null) => void;
     onBoxSelect?: (bbox: [number, number, number, number]) => void;
   } = $props();
@@ -55,6 +57,10 @@
   let sidePending: number | undefined;
   const urls = new Map<string, string>();
   const { start: startSpin, stop: stopSpin } = createSpin(() => map);
+
+  $effect(() => {
+    if (processing) stopSpin();
+  });
 
   const issueColor: ExpressionSpecification = [
     "match",
