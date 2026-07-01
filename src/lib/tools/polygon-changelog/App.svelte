@@ -32,6 +32,7 @@
   let loadedB = $state(false);
   let loadingSide = $state<"a" | "b" | null>(null);
   let loadError = $state<string | null>(null);
+  let dropOpen = $state(true);
 
   // Auto-detected columns + user selections
   let colsA = $state<ColumnGuess | null>(null);
@@ -167,6 +168,7 @@
     loadError = null;
     showSide = "b";
     reclassifyPending = false;
+    dropOpen = true;
     if (reclassifyTimer) {
       clearTimeout(reclassifyTimer);
       reclassifyTimer = undefined;
@@ -249,6 +251,7 @@
       if (result.method) comparisonMethod = result.method;
       currentStage = 7;
       stageLabel = "Done";
+      dropOpen = false;
       exposeDebugHook();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -475,48 +478,50 @@
       </div>
     {/if}
 
-    <section class="cw-step">
-      <h2 class="cw-step-heading">Drop both layers</h2>
-      <div class="cw-dropzones">
-        <div data-testid="dropzone-a">
-          <label class="cw-zone-label">Version A</label>
-          <DropZone
-            bind:files={filesA}
-            disabled={running || loadingSide === "a"}
-            helpText="Older version. Polygon layer in any supported format."
-          />
+    <details class="cw-step" bind:open={dropOpen}>
+      <summary class="cw-step-heading">Drop both layers</summary>
+      <div class="cw-drop-body">
+        <div class="cw-dropzones">
+          <div data-testid="dropzone-a">
+            <label class="cw-zone-label">Version A</label>
+            <DropZone
+              bind:files={filesA}
+              disabled={running || loadingSide === "a"}
+              helpText="Older version. Polygon layer in any supported format."
+            />
+          </div>
+          <div data-testid="dropzone-b">
+            <label class="cw-zone-label">Version B</label>
+            <DropZone
+              bind:files={filesB}
+              disabled={running || loadingSide === "b"}
+              helpText="Newer version. Same coverage area."
+            />
+          </div>
         </div>
-        <div data-testid="dropzone-b">
-          <label class="cw-zone-label">Version B</label>
-          <DropZone
-            bind:files={filesB}
-            disabled={running || loadingSide === "b"}
-            helpText="Newer version. Same coverage area."
-          />
-        </div>
+        {#if loadingSide === "a"}<p class="cw-status">Loading Version A…</p>{/if}
+        {#if loadingSide === "b"}<p class="cw-status">Loading Version B…</p>{/if}
+        {#if loadError}<div class="cw-error">{loadError}</div>{/if}
+        {#if running || errorStage > 0}
+          <ol class="cw-stages">
+            {#each STAGE_LABELS as label, i}
+              {@const status = stageStatus(i)}
+              <li class={status}>
+                {#if status === "error"}
+                  <span class="cw-stage-x">✕</span>
+                {:else}
+                  <span class="cw-stage-dot"></span>
+                {/if}
+                <span class="cw-stage-label">
+                  {i + 1 === currentStage && stageLabel ? stageLabel : label}
+                </span>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+        {#if error}<div class="cw-error">{error}</div>{/if}
       </div>
-      {#if loadingSide === "a"}<p class="cw-status">Loading Version A…</p>{/if}
-      {#if loadingSide === "b"}<p class="cw-status">Loading Version B…</p>{/if}
-      {#if loadError}<div class="cw-error">{loadError}</div>{/if}
-      {#if running || errorStage > 0}
-        <ol class="cw-stages">
-          {#each STAGE_LABELS as label, i}
-            {@const status = stageStatus(i)}
-            <li class={status}>
-              {#if status === "error"}
-                <span class="cw-stage-x">✕</span>
-              {:else}
-                <span class="cw-stage-dot"></span>
-              {/if}
-              <span class="cw-stage-label">
-                {i + 1 === currentStage && stageLabel ? stageLabel : label}
-              </span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
-      {#if error}<div class="cw-error">{error}</div>{/if}
-    </section>
+    </details>
 
     {#if overlayGeoJSON || errorStage > 0}
     <section class="cw-step">
@@ -549,22 +554,52 @@
         >Geometry first</button>
         <button
           class="cw-match-btn"
-          class:active={matchMode === "identity"}
+          class:active={matchMode === "identity" && linkMode === "either"}
           disabled={running}
-          onclick={() => { matchMode = "identity"; scheduleReclassify(); }}
-        >Identity first</button>
+          onclick={() => { matchMode = "identity"; linkMode = "either"; scheduleReclassify(); }}
+        >Code or name</button>
+        <button
+          class="cw-match-btn"
+          class:active={matchMode === "identity" && linkMode === "both"}
+          disabled={running}
+          onclick={() => { matchMode = "identity"; linkMode = "both"; scheduleReclassify(); }}
+        >Code and name</button>
       </div>
       <p class="cw-hint">
         {#if matchMode === "geometry"}
           Units matched by spatial overlap only.
+        {:else if linkMode === "either"}
+          Pairs units sharing a unique code <em>or</em> name even without overlap, so moved units
+          are classified as <em>relocated</em>, <em>modified</em>, or <em>renamed</em> instead of
+          merge/split/complex.
         {:else}
-          Units sharing a unique code or name are paired first — moved units appear as
-          <em>relocated</em> rather than merge/split/complex.
+          Pairs units sharing a unique code <em>and</em> name even without overlap, so moved units
+          are classified as <em>relocated</em>, <em>modified</em>, or <em>renamed</em> instead of
+          merge/split/complex.
         {/if}
       </p>
 
       <label class="cw-slider">
-        <span>Match — {Math.round(tauMatch * 100)}%</span>
+        <span>Matched — {Math.round(tauSame * 100)}%</span>
+        <input
+          type="range"
+          min="0"
+          max={comparisonMethod === "sampling" ? "0.99" : "1"}
+          step="0.01"
+          bind:value={tauSame}
+          oninput={scheduleReclassify}
+          disabled={running}
+        />
+        <p class="cw-hint">
+          How much a 1:1 matched pair must overlap (IoU) to be classified as
+          <em>unchanged</em> rather than <em>modified</em>.{#if comparisonMethod === "sampling"}
+            {" "}Capped at 99% — sampling can't reliably distinguish near-identical from bit-identical geometry.
+          {/if}
+        </p>
+      </label>
+
+      <label class="cw-slider">
+        <span>Related — {Math.round(tauMatch * 100)}%</span>
         <input
           type="range"
           min="0"
@@ -576,40 +611,10 @@
         />
         <p class="cw-hint">
           How much of either polygon must overlap the other to be considered related.
-          Lower = more matches.
+          Lower = more units linked.
         </p>
       </label>
 
-      <details class="cw-advanced">
-        <summary>Advanced</summary>
-        <label class="cw-slider">
-          <span>Unchanged — {Math.round(tauSame * 100)}%</span>
-          <input
-            type="range"
-            min="0"
-            max={comparisonMethod === "sampling" ? "0.99" : "1"}
-            step="0.01"
-            bind:value={tauSame}
-            oninput={scheduleReclassify}
-            disabled={running}
-          />
-          <p class="cw-hint">
-            How much a 1:1 matched pair must overlap (IoU) to be classified as
-            <em>unchanged</em> rather than <em>modified</em>.{#if comparisonMethod === "sampling"}
-              {" "}Capped at 99% — sampling can't reliably distinguish near-identical from bit-identical geometry.
-            {/if}
-          </p>
-        </label>
-        {#if linkByCode && linkByName}
-          <label class="cw-checkbox-row">
-            <span>Identity match:</span>
-            <select bind:value={linkMode} onchange={scheduleReclassify} disabled={running}>
-              <option value="either">Code or name</option>
-              <option value="both">Code and name</option>
-            </select>
-          </label>
-        {/if}
-      </details>
     </section>
 
     <section class="cw-step">
@@ -768,22 +773,28 @@
     padding-top: 0.75rem;
     border-top: 1px solid #e5e7eb;
   }
+  .cw-drop-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
   .cw-step-heading {
     font-size: 1rem;
     font-weight: 600;
     color: #111;
     margin: 0;
   }
+  summary.cw-step-heading {
+    cursor: pointer;
+    user-select: none;
+  }
+  summary.cw-step-heading:hover {
+    color: #374151;
+  }
   .cw-dropzones {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-  }
-  .cw-dropzones :global(.drop-zone) {
-    padding: 0.6rem 0.75rem;
-  }
-  .cw-dropzones :global(.drop-message) {
-    font-size: 0.8rem;
   }
   .cw-zone-label {
     display: block;
@@ -909,21 +920,6 @@
     opacity: 1;
     visibility: visible;
   }
-  .cw-advanced {
-    margin-top: 0.5rem;
-  }
-  .cw-advanced summary {
-    font-size: 0.8rem;
-    color: #6b7280;
-    cursor: pointer;
-    user-select: none;
-  }
-  .cw-advanced summary:hover {
-    color: #374151;
-  }
-  .cw-advanced > .cw-slider {
-    margin-top: 0.5rem;
-  }
   .cw-match-toggle {
     display: flex;
     border: 1px solid #d1d5db;
@@ -956,17 +952,6 @@
   .cw-match-btn:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-  .cw-checkbox-row {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.8rem;
-    color: #374151;
-    margin-top: 0.5rem;
-  }
-  .cw-checkbox-row select {
-    font-size: 0.8rem;
   }
   .cw-status {
     font-size: 0.85rem;
