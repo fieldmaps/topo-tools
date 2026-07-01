@@ -292,6 +292,8 @@ export async function stageClassify(
   // larger clusters (merge/split/complex stay classified as today either way).
   const clusterRescuedOnly = new Map<number, boolean>();
   // True if any pair in this cluster has a code or name difference across versions.
+  // Only consulted when linkByCode/linkByName are enabled (identity-first mode) —
+  // geometry-first mode ignores code/name entirely, so it never yields "renamed".
   const clusterHasAttrChange = new Map<number, boolean>();
   for (const p of passingPairs) {
     const root = uf.find(`a:${p.a_fid}`);
@@ -300,7 +302,11 @@ export async function stageClassify(
     if (p.iou > prev) clusterBestIou.set(id, p.iou);
     const prevRescuedOnly = clusterRescuedOnly.get(id) ?? true;
     clusterRescuedOnly.set(id, prevRescuedOnly && p.rescuedByIdentity);
-    const attrChanged = p.a_code !== p.b_code || p.a_name !== p.b_name;
+    const codeChanged =
+      opts.linkByCode && p.a_code != null && p.b_code != null && p.a_code !== p.b_code;
+    const nameChanged =
+      opts.linkByName && p.a_name != null && p.b_name != null && p.a_name !== p.b_name;
+    const attrChanged = codeChanged || nameChanged;
     clusterHasAttrChange.set(id, (clusterHasAttrChange.get(id) ?? false) || attrChanged);
   }
 
